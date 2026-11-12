@@ -302,7 +302,7 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 .attend button + button { border-left: 1px solid var(--rule); }
 .attend .is-yes { background: #e1f3f1; color: var(--work); font-weight: 600; }
 .attend .is-no { background: var(--danger-tint); color: var(--danger); font-weight: 600; }
-.student-pay { grid-column: 1 / -1; display: grid; grid-template-columns: 150px 150px minmax(0, 1fr); gap: 10px; align-items: end; }
+.student-pay { grid-column: 1 / -1; display: grid; grid-template-columns: 150px 150px 150px minmax(0, 1fr); gap: 10px; align-items: end; }
 .student-money { font-size: 13px; }
 .student-money input { font-variant-numeric: tabular-nums; }
 .student-debt { align-self: center; padding-top: 18px; font-size: 14px; }
@@ -551,6 +551,8 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
   .attend { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: 1fr 1fr; }
   .attend button { min-height: 44px; }
   .student-pay { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pay-form { grid-template-columns: minmax(0, 1fr); }
+  .pay-bars { height: 120px; }
   .student-debt { grid-column: 1 / -1; padding-top: 0; }
   .reply-bar .chip { min-height: 44px; padding: 4px 14px; }
   .pay-stats { grid-template-columns: minmax(0, 1fr); gap: 8px; }
@@ -597,3 +599,20 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; }
 }
+
+/* Оплата: форма платежа, история, отчёт */
+.pay-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; align-items: end; padding: 12px 0 4px; }
+.pay-form .field input, .pay-form .field select { width: 100%; }
+.pay-form-actions { display: flex; gap: 8px; grid-column: 1 / -1; flex-wrap: wrap; }
+.pay-people-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.pay-method { font-size: 13px; color: var(--ink-soft); }
+.pay-history { list-style: none; margin: 8px 0 0; padding: 0; }
+.pay-history li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; padding: 8px 0; border-bottom: 1px solid var(--rule-soft); font-size: 14px; }
+.pay-history li:last-child { border-bottom: 0; }
+.pay-negative { color: var(--danger, #b3261e); }
+.pay-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin: 12px 0; }
+.pay-methods { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin: 12px 0; }
+.pay-bars { display: flex; align-items: flex-end; gap: 2px; height: 160px; padding: 8px 0 0; border-bottom: 1px solid var(--rule); }
+.pay-bar { flex: 1 1 0; min-width: 2px; background: var(--action); border-radius: 2px 2px 0 0; }
+.pay-bar-axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-soft); margin-top: 4px; }
+.pay-hint { font-size: 13px; color: var(--ink-soft); margin: 4px 0 0; }

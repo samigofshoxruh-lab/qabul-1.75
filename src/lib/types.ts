@@ -69,8 +69,23 @@ export interface LessonStudent {
   note: string | null;
   attended: boolean | null;
   price: number;
+  discount: number;
   paid: number;
   debt: number;
+}
+
+export type PaymentMethod = "cash" | "card" | "payme" | "click" | "transfer" | "other";
+
+export interface Payment {
+  id: string;
+  workspace_id: string;
+  student_id: string;
+  amount: number;
+  method: PaymentMethod;
+  note: string | null;
+  paid_at: string;
+  created_by: string | null;
+  created_at: string;
 }
 
 export interface LessonReminder {

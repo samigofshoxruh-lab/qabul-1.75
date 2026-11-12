@@ -389,7 +389,7 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
     await update(student, { note: note || null });
   }
 
-  async function update(student: LessonStudent, fields: Partial<Pick<LessonStudent, "attended" | "price" | "paid" | "note">>) {
+  async function update(student: LessonStudent, fields: Partial<Pick<LessonStudent, "attended" | "price" | "discount" | "paid" | "note">>) {
     setError("");
     const { error: e } = await supabase.from("lesson_students").update(fields).eq("id", student.id);
     if (e) setError(e.message);
@@ -403,6 +403,7 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
       missed: list.filter((s) => s.attended === false).length,
       paid: list.reduce((sum, s) => sum + s.paid, 0),
       price: list.reduce((sum, s) => sum + s.price, 0),
+      discount: list.reduce((sum, s) => sum + s.discount, 0),
       debt: list.reduce((sum, s) => sum + s.debt, 0),
     };
   }, [students]);
@@ -415,7 +416,7 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
       {students && students.length > 0 && (
         <p className="lesson-totals">
           <span>Пришли {totals.came} из {students.length}{totals.missed > 0 ? `, не пришли ${totals.missed}` : ""}</span>
-          <span>Оплачено {money(totals.paid)} из {money(totals.price)}</span>
+          <span>Оплачено {money(totals.paid)} из {money(totals.price - totals.discount)}</span>
           {totals.debt > 0 && <span className="debt">Долг {money(totals.debt)}</span>}
         </p>
       )}
@@ -451,6 +452,7 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
               </button>
               <div className="student-pay">
                 <MoneyField label="К оплате" value={student.price} onSave={(price) => update(student, { price })} />
+                <MoneyField label="Скидка" value={student.discount} onSave={(discount) => update(student, { discount })} />
                 <MoneyField label="Оплачено" value={student.paid} onSave={(paid) => update(student, { paid })} />
                 <p className={`student-debt ${student.debt > 0 ? "debt" : "muted"}`}>
                   {student.debt > 0 ? `Долг ${money(student.debt)}` : student.price > 0 ? "Оплачено полностью" : "Без оплаты"}
