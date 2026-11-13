@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
-import { BookOpen, Building2, Inbox, LifeBuoy, ListChecks, LogOut, Menu, Plug, ShieldCheck, UserRound, Users, Wallet } from "lucide-react";
+import { BookOpen, Building2, Inbox, KeyRound, LifeBuoy, ListChecks, LogOut, Menu, Plug, ShieldCheck, UserRound, Users, Wallet } from "lucide-react";
 import { AccountDialog, SignOutButton, SignOutDialog } from "./components/Account";
 import { Logo, Modal } from "./components/ui";
 import { type ChannelProblem, useChannelProblems } from "./lib/alerts";
@@ -16,7 +16,9 @@ import { LeadsPage } from "./pages/LeadsPage";
 import { LessonsPage } from "./pages/LessonsPage";
 import { PaymentsPage } from "./pages/PaymentsPage";
 import { PlatformPage } from "./pages/PlatformPage";
+import { PlatformAdminsPage } from "./pages/PlatformAdminsPage";
 import { PlatformSupportPage } from "./pages/PlatformSupportPage";
+import { PlatformPermsContext, type PlatformPerms } from "./lib/platformPerms";
 import { OwnerSupport, SupportPage } from "./pages/SupportPage";
 import { SurveysPage } from "./pages/SurveysPage";
 import { TeamPage } from "./pages/TeamPage";
@@ -186,17 +188,18 @@ function CabinetShell({ workspace, isPlatformAdmin, children }: { workspace: Wor
   );
 }
 
-function PlatformShell({ membership, children }: { membership: Membership | undefined; children: ReactNode }) {
-  const unread = useSupportUnread(true);
+function PlatformShell({ membership, perms, children }: { membership: Membership | undefined; perms: PlatformPerms; children: ReactNode }) {
+  const unread = useSupportUnread(true, perms.can_support);
   const items: NavItem[] = [
     {
       to: "/platform",
       label: "Компании",
       icon: Building2,
       primary: true,
-      isActive: (path) => path.startsWith("/platform") && !path.startsWith("/platform/support"),
+      isActive: (path) => path.startsWith("/platform") && !path.startsWith("/platform/support") && !path.startsWith("/platform/admins"),
     },
-    { to: "/platform/support", label: "Поддержка", icon: LifeBuoy, badge: unread, primary: true },
+    ...(perms.can_support ? [{ to: "/platform/support", label: "Поддержка", icon: LifeBuoy, badge: unread, primary: true }] : []),
+    ...(perms.can_manage_admins ? [{ to: "/platform/admins", label: "Админы", icon: KeyRound, primary: true }] : []),
     ...(membership?.active ? [{ to: "/leads", label: "Мой кабинет", icon: Inbox, primary: true }] : []),
   ];
   return (
@@ -284,8 +287,17 @@ export function App() {
   const isPlatformAdmin = access.is_platform_admin;
   const membership = access.memberships[0];
 
-  const inPlatform = (page: ReactNode) =>
-    isPlatformAdmin ? <PlatformShell membership={membership}>{page}</PlatformShell> : <Navigate to="/" replace />;
+  const perms = access.platform;
+  const inPlatform = (page: ReactNode, allowed: boolean | undefined = true) =>
+    isPlatformAdmin && perms ? (
+      <PlatformPermsContext.Provider value={perms}>
+        <PlatformShell membership={membership} perms={perms}>
+          {allowed ? page : <Navigate to="/platform" replace />}
+        </PlatformShell>
+      </PlatformPermsContext.Provider>
+    ) : (
+      <Navigate to="/" replace />
+    );
 
   // Кабинет компании: с истёкшим сроком владелец попадает на экран с поддержкой.
   let cabinet: ReactNode;
@@ -348,8 +360,9 @@ export function App() {
       <Route path="/" element={<Navigate to={isPlatformAdmin ? "/platform" : "/leads"} replace />} />
       <Route path="/platform" element={inPlatform(companies)} />
       <Route path="/platform/c/:companyId" element={inPlatform(companies)} />
-      <Route path="/platform/support" element={inPlatform(support)} />
-      <Route path="/platform/support/:workspaceId" element={inPlatform(support)} />
+      <Route path="/platform/support" element={inPlatform(support, perms?.can_support)} />
+      <Route path="/platform/support/:workspaceId" element={inPlatform(support, perms?.can_support)} />
+      <Route path="/platform/admins" element={inPlatform(<PlatformAdminsPage />, perms?.can_manage_admins)} />
       <Route path="*" element={cabinet} />
     </Routes>
   );

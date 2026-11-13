@@ -30,6 +30,7 @@ export interface Membership {
 
 export interface Access {
   is_platform_admin: boolean;
+  platform: import("./platformPerms").PlatformPerms | null;
   memberships: Membership[];
 }
 

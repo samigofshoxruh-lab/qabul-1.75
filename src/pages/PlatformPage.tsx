@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, LifeBuoy, Plus, Search, Trash2 } from "lucide-react";
 import { ChannelTag, CopyField, Empty, ErrorNote, Modal } from "../components/ui";
 import { accessLabel, longDate, randomPassword } from "../lib/format";
+import { usePlatformPerms } from "../lib/platformPerms";
 import { callFunction, errorText } from "../lib/supabase";
 import type { Company, CompanyMember } from "../lib/types";
 
@@ -114,6 +115,7 @@ function CreateCompany({ onClose, onCreated }: { onClose: () => void; onCreated:
 }
 
 export function PlatformPage({ onAccessChanged }: { onAccessChanged: () => void }) {
+  const perms = usePlatformPerms();
   const [companies, setCompanies] = useState<Company[] | null>(null);
   const { companyId } = useParams();
   const navigate = useNavigate();
@@ -151,9 +153,11 @@ export function PlatformPage({ onAccessChanged }: { onAccessChanged: () => void 
         <header className="lead-list-head lessons-head">
           <div className="lead-list-title">
             <h1>Компании</h1>
-            <button type="button" className="button button-primary" onClick={() => setCreating(true)}>
-              <Plus size={16} aria-hidden /> Новая компания
-            </button>
+            {perms.can_manage_companies && (
+              <button type="button" className="button button-primary" onClick={() => setCreating(true)}>
+                <Plus size={16} aria-hidden /> Новая компания
+              </button>
+            )}
           </div>
           <label className="search search-last">
             <Search size={16} aria-hidden />
@@ -190,9 +194,11 @@ export function PlatformPage({ onAccessChanged }: { onAccessChanged: () => void 
                     <span>{company.leads_count} заявок</span>
                   </span>
                 </button>
-                <button type="button" className="icon-button company-delete" onClick={() => setDeleting(company)} aria-label={`Удалить компанию ${company.name}`} title="Удалить компанию">
-                  <Trash2 size={18} aria-hidden />
-                </button>
+                {perms.can_manage_companies && (
+                  <button type="button" className="icon-button company-delete" onClick={() => setDeleting(company)} aria-label={`Удалить компанию ${company.name}`} title="Удалить компанию">
+                    <Trash2 size={18} aria-hidden />
+                  </button>
+                )}
               </li>
             );
           })}
@@ -255,6 +261,7 @@ function CompanyDetail({
   onBack: () => void;
   onDelete: () => void;
 }) {
+  const perms = usePlatformPerms();
   const [date, setDate] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -296,15 +303,21 @@ function CompanyDetail({
       </header>
 
       <div className="company-actions">
-        <Link className="button" to={`/platform/support/${company.id}`}>
-          <LifeBuoy size={16} aria-hidden /> Написать владельцу
-        </Link>
-        <button type="button" className="button" onClick={() => { setNewName(company.name); setRenaming(true); }}>
-          Переименовать
-        </button>
-        <button type="button" className="button button-danger" onClick={onDelete}>
-          <Trash2 size={16} aria-hidden /> Удалить компанию
-        </button>
+        {perms.can_support && (
+          <Link className="button" to={`/platform/support/${company.id}`}>
+            <LifeBuoy size={16} aria-hidden /> Написать владельцу
+          </Link>
+        )}
+        {perms.can_manage_companies && (
+          <>
+            <button type="button" className="button" onClick={() => { setNewName(company.name); setRenaming(true); }}>
+              Переименовать
+            </button>
+            <button type="button" className="button button-danger" onClick={onDelete}>
+              <Trash2 size={16} aria-hidden /> Удалить компанию
+            </button>
+          </>
+        )}
       </div>
 
       <p className="company-facts">
@@ -323,6 +336,8 @@ function CompanyDetail({
       <section className="panel" aria-label="Срок доступа">
         <h3>Срок доступа</h3>
         <p className={`panel-status tone-${status.tone}`}>{status.text}</p>
+        {perms.can_manage_access ? (
+          <>
         <div className="button-row">
           {[1, 3, 6, 12].map((months) => (
             <button key={months} type="button" className="button" disabled={busy} onClick={() => act({ action: "set_access", add_months: months })}>
@@ -348,7 +363,11 @@ function CompanyDetail({
             Установить
           </button>
         </form>
-        <div>
+          </>
+        ) : (
+          <p className="muted">У вас нет права менять сроки доступа. Его выдаёт главный админ.</p>
+        )}
+        {perms.can_manage_companies && <div>
           <button
             type="button"
             className={company.is_suspended ? "button button-primary" : "link-button link-danger"}
@@ -357,7 +376,7 @@ function CompanyDetail({
           >
             {company.is_suspended ? "Возобновить доступ" : "Приостановить доступ"}
           </button>
-        </div>
+        </div>}
         <p className="muted">Когда срок закончился, кабинет закрывается, а бот перестаёт отвечать клиентам. Данные сохраняются.</p>
         {earlier.length > 0 && (
           <div className="note note-attention term-warning">
@@ -365,9 +384,11 @@ function CompanyDetail({
               Личный срок заканчивается раньше срока компании, и продление на него не влияет:{" "}
               {earlier.map((m) => `${m.email} (до ${longDate(m.access_until!)})`).join(", ")}.
             </p>
-            <button type="button" className="button" disabled={busy} onClick={() => act({ action: "clear_user_terms" })}>
-              Снять личные сроки
-            </button>
+            {perms.can_manage_access && (
+              <button type="button" className="button" disabled={busy} onClick={() => act({ action: "clear_user_terms" })}>
+                Снять личные сроки
+              </button>
+            )}
           </div>
         )}
       </section>
@@ -375,9 +396,11 @@ function CompanyDetail({
       <section className="panel" aria-label="Пользователи">
         <div className="panel-head">
           <h3>Пользователи</h3>
-          <button type="button" className="button" onClick={() => setAddingUser(true)}>
-            <Plus size={16} aria-hidden /> Добавить
-          </button>
+          {perms.can_manage_users && (
+            <button type="button" className="button" onClick={() => setAddingUser(true)}>
+              <Plus size={16} aria-hidden /> Добавить
+            </button>
+          )}
         </div>
         <ul>
           {company.members.map((member) => {
@@ -389,15 +412,21 @@ function CompanyDetail({
                   <span className="muted">{member.role === "owner" ? "Владелец" : "Администратор"}</span>
                   {personal && <span className={`tone-${personal.tone}`}>, личный срок: {personal.text.toLowerCase()}</span>}
                 </span>
-                <button type="button" className="link-button" onClick={() => setTermFor(member)}>
-                  Личный срок
-                </button>
-                <button type="button" className="link-button" onClick={() => setPasswordFor(member)}>
-                  Сменить пароль
-                </button>
-                <button type="button" className="link-button link-danger" onClick={() => setRemoving(member)}>
-                  Удалить
-                </button>
+                {perms.can_manage_access && (
+                  <button type="button" className="link-button" onClick={() => setTermFor(member)}>
+                    Личный срок
+                  </button>
+                )}
+                {perms.can_manage_users && (
+                  <>
+                    <button type="button" className="link-button" onClick={() => setPasswordFor(member)}>
+                      Сменить пароль
+                    </button>
+                    <button type="button" className="link-button link-danger" onClick={() => setRemoving(member)}>
+                      Удалить
+                    </button>
+                  </>
+                )}
               </li>
             );
           })}

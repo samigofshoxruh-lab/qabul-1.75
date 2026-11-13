@@ -58,18 +58,69 @@ async function overview(db: SupabaseClient) {
   }));
 }
 
+type Perm = "can_manage_companies" | "can_manage_access" | "can_manage_users" | "can_support" | "can_manage_admins";
+type Perms = Record<Perm, boolean>;
+type Role = "main" | "manager" | "support" | "custom";
+
+const PERMS: Perm[] = ["can_manage_companies", "can_manage_access", "can_manage_users", "can_support", "can_manage_admins"];
+
+/** Какое право нужно для действия. Действие без права доступно любому активному админу. */
+const NEEDS: Record<string, Perm | null> = {
+  overview: null,
+  create_company: "can_manage_companies",
+  rename: "can_manage_companies",
+  set_suspended: "can_manage_companies",
+  delete_company: "can_manage_companies",
+  set_access: "can_manage_access",
+  set_user_access: "can_manage_access",
+  clear_user_terms: "can_manage_access",
+  add_user: "can_manage_users",
+  set_password: "can_manage_users",
+  remove_user: "can_manage_users",
+  admins_list: "can_manage_admins",
+  admin_add: "can_manage_admins",
+  admin_update: "can_manage_admins",
+  admin_set_password: "can_manage_admins",
+  admin_remove: "can_manage_admins",
+};
+
+const PRESETS: Record<Exclude<Role, "custom">, Perms> = {
+  main: { can_manage_companies: true, can_manage_access: true, can_manage_users: true, can_support: true, can_manage_admins: true },
+  manager: { can_manage_companies: true, can_manage_access: true, can_manage_users: true, can_support: true, can_manage_admins: false },
+  support: { can_manage_companies: false, can_manage_access: false, can_manage_users: false, can_support: true, can_manage_admins: false },
+};
+
+/** Права из роли, а для «своих прав» из галочек, которые отметил главный админ. */
+function permsFor(role: unknown, given: unknown): { role: Role; perms: Perms } {
+  if (role === "main" || role === "manager" || role === "support") return { role, perms: PRESETS[role] };
+  if (role !== "custom") throw new ChannelError("Выберите роль");
+  const source = (given && typeof given === "object" ? given : {}) as Record<string, unknown>;
+  const perms = Object.fromEntries(PERMS.map((p) => [p, source[p] === true])) as Perms;
+  if (!Object.values(perms).some(Boolean)) throw new ChannelError("Отметьте хотя бы одно право или выберите готовую роль");
+  return { role: "custom", perms };
+}
+
+async function logAction(db: SupabaseClient, actor: { id: string; email?: string }, targetEmail: string | null, action: string, details: Record<string, unknown> = {}) {
+  await db.from("platform_admin_log").insert({ actor_id: actor.id, actor_email: actor.email ?? null, target_email: targetEmail, action, details });
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   try {
     const db = serviceClient();
     const user = await requireUser(req, db);
 
-    const { data: admin, error: adminError } = await db.from("platform_admins").select("user_id").eq("user_id", user.id).maybeSingle();
+    const { data: admin, error: adminError } = await db.from("platform_admins").select("*").eq("user_id", user.id).maybeSingle();
     if (adminError) throw adminError;
-    if (!admin) throw new ChannelError("Это действие доступно только главному админу", 403);
+    if (!admin || !admin.is_active) throw new ChannelError("Это действие доступно только админам платформы", 403);
 
     const body = await readJson(req);
     const workspaceId = body.workspace_id as string;
+
+    const need = NEEDS[String(body.action)];
+    if (need && !admin[need]) {
+      throw new ChannelError("У вас нет права на это действие. Права выдаёт главный админ.", 403);
+    }
 
     switch (body.action) {
       case "overview":
@@ -237,6 +288,77 @@ Deno.serve(async (req) => {
           else removedUsers++;
         }
         return json({ ok: true, removed_users: removedUsers });
+      }
+
+      case "admins_list": {
+        const { data: admins, error } = await db.from("platform_admins").select("*").order("created_at");
+        if (error) throw error;
+        const { data: log } = await db.from("platform_admin_log").select("*").order("created_at", { ascending: false }).limit(40);
+        return json({ admins, log: log ?? [], me: user.id });
+      }
+
+      case "admin_add": {
+        const email = text(body.email).toLowerCase();
+        const password = typeof body.password === "string" ? body.password : "";
+        checkCredentials(email, password);
+        const { role, perms } = permsFor(body.role, body.permissions);
+        const userId = await createUser(db, email, password);
+        const { error } = await db.from("platform_admins").insert({ user_id: userId, email, role, created_by: user.id, ...perms });
+        if (error) {
+          // Не оставляем учётную запись без прав.
+          await db.auth.admin.deleteUser(userId);
+          throw error;
+        }
+        await logAction(db, user, email, "Добавлен админ", { role, ...perms });
+        return json({ ok: true });
+      }
+
+      case "admin_update": {
+        const userId = text(body.user_id);
+        const { data: target, error: findError } = await db.from("platform_admins").select("*").eq("user_id", userId).maybeSingle();
+        if (findError) throw findError;
+        if (!target) throw new ChannelError("Админ не найден", 404);
+        const { role, perms } = permsFor(body.role, body.permissions);
+        const active = body.is_active !== false;
+        if (userId === user.id && (!active || !perms.can_manage_admins)) {
+          throw new ChannelError("Нельзя отключить себя или забрать у себя управление админами. Попросите другого главного админа.");
+        }
+        const { error } = await db.from("platform_admins").update({ role, is_active: active, ...perms }).eq("user_id", userId);
+        if (error) {
+          if (error.code === "P0001") throw new ChannelError(error.message);
+          throw error;
+        }
+        await logAction(db, user, target.email, active ? "Изменены права" : "Админ отключён", { role, is_active: active, ...perms });
+        return json({ ok: true });
+      }
+
+      case "admin_set_password": {
+        const userId = text(body.user_id);
+        const password = typeof body.password === "string" ? body.password : "";
+        if (password.length < 8) throw new ChannelError("Пароль должен быть не короче 8 символов");
+        const { data: target } = await db.from("platform_admins").select("email").eq("user_id", userId).maybeSingle();
+        if (!target) throw new ChannelError("Админ не найден", 404);
+        const { error } = await db.auth.admin.updateUserById(userId, { password });
+        if (error) throw new ChannelError(`Не удалось сменить пароль: ${error.message}`, 502);
+        await logAction(db, user, target.email, "Сменён пароль");
+        return json({ ok: true });
+      }
+
+      case "admin_remove": {
+        const userId = text(body.user_id);
+        if (userId === user.id) throw new ChannelError("Себя удалить нельзя. Попросите другого главного админа.");
+        const { data: target } = await db.from("platform_admins").select("email").eq("user_id", userId).maybeSingle();
+        if (!target) throw new ChannelError("Админ не найден", 404);
+        const { error } = await db.from("platform_admins").delete().eq("user_id", userId);
+        if (error) {
+          if (error.code === "P0001") throw new ChannelError(error.message);
+          throw error;
+        }
+        // Учётную запись удаляем, только если она не владелец и не сотрудник какой-либо компании.
+        const { count } = await db.from("workspace_members").select("*", { count: "exact", head: true }).eq("user_id", userId);
+        if (!count) await db.auth.admin.deleteUser(userId);
+        await logAction(db, user, target.email, "Админ удалён");
+        return json({ ok: true });
       }
 
       default:

@@ -1205,3 +1205,36 @@ test("поддержка: новое сообщение открывает об�
   assert.equal((await as("authenticated", owner.id, (run) => run("select 1 from support_templates"))).length, 0);
   await assert.rejects(as("authenticated", owner.id, (run) => run("insert into support_templates (title, text) values ('Взлом', 'x')")), /row-level security/);
 });
+
+// ---------------------------------------------------------------------------
+// Админы платформы: роли и права
+// ---------------------------------------------------------------------------
+
+test("права админа платформы: без права на поддержку чат закрыт, выключенный админ не входит, последнего главного убрать нельзя", async () => {
+  const owner = await company("Права платформы");
+  const main = await signup();
+  const helper = await signup();
+  await q("insert into platform_admins (user_id, email) values ($1, $2)", [main.id, main.email]);
+  await q("insert into platform_admins (user_id, email, role, can_manage_companies, can_manage_access, can_manage_users, can_support, can_manage_admins) values ($1, $2, 'custom', true, false, false, false, false)", [helper.id, helper.email]);
+
+  await as("authenticated", owner.id, (run) => run("select support_send($1, 'Нужна помощь', false)", [owner.workspace]));
+  assert.ok((await as("authenticated", main.id, (run) => run("select 1 from support_messages"))).length >= 1);
+  assert.equal((await as("authenticated", helper.id, (run) => run("select 1 from support_messages"))).length, 0);
+  await assert.rejects(as("authenticated", helper.id, (run) => run("select support_send($1, 'Я не должен', true)", [owner.workspace])), /Нет доступа/);
+
+  const access = (await as("authenticated", helper.id, (run) => run("select my_access() as a")))[0].a;
+  assert.equal(access.is_platform_admin, true);
+  assert.deepEqual([access.platform.role, access.platform.can_support, access.platform.can_manage_companies], ["custom", false, true]);
+
+  // Выключенный админ не входит в админку и не видит поддержку.
+  await q("update platform_admins set is_active = false, can_support = true where user_id = $1", [helper.id]);
+  assert.equal((await as("authenticated", helper.id, (run) => run("select my_access() as a")))[0].a.is_platform_admin, false);
+  assert.equal((await as("authenticated", helper.id, (run) => run("select 1 from support_messages"))).length, 0);
+
+  // Остаться без админа, управляющего админами, нельзя.
+  await q("delete from platform_admins where user_id <> $1 and can_manage_admins", [main.id]).catch(() => {});
+  const others = await q("select user_id from platform_admins where is_active and can_manage_admins and user_id <> $1", [main.id]);
+  await q("delete from platform_admins where user_id = any($1)", [others.map((r) => r.user_id)]);
+  await assert.rejects(q("update platform_admins set can_manage_admins = false where user_id = $1", [main.id]), /хотя бы один активный админ/);
+  await assert.rejects(q("delete from platform_admins where user_id = $1", [main.id]), /хотя бы один активный админ/);
+});

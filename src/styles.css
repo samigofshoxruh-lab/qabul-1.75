@@ -683,3 +683,17 @@ button.chip.is-on { outline: 2px solid var(--danger); }
 .support-state { display: flex; align-items: center; gap: 10px; padding: 4px 0 8px; }
 .template-chip { display: inline-flex; align-items: center; gap: 2px; }
 .support-file { margin: 0; }
+
+/* Админы платформы */
+.admin-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.admin-card { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; display: grid; gap: 10px; }
+.admin-card.is-off { opacity: 0.75; }
+.admin-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; overflow-wrap: anywhere; }
+.perm-list { border: 1px solid var(--rule-soft); border-radius: 6px; padding: 8px 12px; display: grid; gap: 6px; }
+.perm-list legend { font-size: 13px; color: var(--ink-soft); padding: 0 4px; }
+.check.perm { align-items: flex-start; }
+.admin-log { list-style: none; margin: 0; padding: 0; }
+.admin-log li { display: flex; flex-wrap: wrap; gap: 2px 12px; padding: 6px 0; border-bottom: 1px solid var(--rule-soft); font-size: 14px; }
+.admin-log time { color: var(--ink-soft); }
+.inline-row { display: flex; gap: 8px; }
+.inline-row input { flex: 1; min-width: 0; }
