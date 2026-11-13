@@ -7,7 +7,7 @@ import { CHANNELS_CHANGED, tokenExpired } from "../lib/alerts";
 import { fullTime, longDate } from "../lib/format";
 import { PLATFORM_ORDER, PLATFORMS } from "../lib/platforms";
 import { callFunction, errorText, supabase } from "../lib/supabase";
-import type { Channel, Platform, Survey } from "../lib/types";
+import type { Channel, Contact, Platform, Survey } from "../lib/types";
 
 type SurveyWithCount = Survey & { questions: { count: number }[] };
 
@@ -143,6 +143,76 @@ function statusText(channel: Channel): { text: string; tone: "ok" | "wait" | "ba
   return { text: "Ждём настройку webhook и первое сообщение", tone: "wait" };
 }
 
+type TestContact = Pick<Contact, "id" | "display_name" | "username" | "phone">;
+
+/** Тест уходит тому, кто уже писал в канал: свой аккаунт напишите боту, затем выберите его здесь. */
+function TestMessage({ channel }: { channel: Channel }) {
+  const [contacts, setContacts] = useState<TestContact[] | null>(null);
+  const [contactId, setContactId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; error?: string; hint?: string } | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    supabase
+      .from("contacts")
+      .select("id, display_name, username, phone")
+      .eq("channel_id", channel.id)
+      .order("last_seen_at", { ascending: false })
+      .limit(30)
+      .then(({ data }) => {
+        const list = (data ?? []) as TestContact[];
+        setContacts(list);
+        if (list[0]) setContactId(list[0].id);
+      });
+  }, [channel.id]);
+
+  async function send() {
+    setBusy(true);
+    setError("");
+    setResult(null);
+    try {
+      setResult(await callFunction<{ ok: boolean; error?: string; hint?: string }>("channels", { action: "test", channel_id: channel.id, contact_id: contactId }));
+    } catch (e) {
+      setError(errorText(e));
+    }
+    setBusy(false);
+  }
+
+  const label = (c: TestContact) => c.display_name || (c.username ? `@${c.username}` : "") || c.phone || "Без имени";
+
+  return (
+    <div className="channel-test">
+      <p>Бот отправит короткое сообщение тому, кто уже писал в этот канал. Напишите боту со своего аккаунта и выберите себя в списке.</p>
+      {contacts === null && <p className="muted">Загружаем…</p>}
+      {contacts !== null && contacts.length === 0 && <p className="muted">В этот канал пока никто не писал. Напишите боту со своего аккаунта и вернитесь сюда.</p>}
+      {contacts !== null && contacts.length > 0 && (
+        <>
+          <label className="field">
+            Кому отправить
+            <select value={contactId} onChange={(e) => setContactId(e.target.value)}>
+              {contacts.map((c) => (
+                <option key={c.id} value={c.id}>{label(c)}</option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="button button-primary" onClick={send} disabled={busy || !contactId}>
+            {busy ? "Отправляем…" : "Отправить"}
+          </button>
+        </>
+      )}
+      <ErrorNote>{error}</ErrorNote>
+      {result?.ok && <p className="note" role="status">Сообщение отправлено. Проверьте, пришло ли оно в чат.</p>}
+      {result && !result.ok && (
+        <>
+          <ErrorNote>{result.hint}</ErrorNote>
+          {result.error && <p className="muted">Ответ платформы: {result.error}</p>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ChannelRow({ channel, surveys, onChanged, onReplaceToken }: { channel: Channel; surveys: SurveyWithCount[]; onChanged: () => void; onReplaceToken: (platform: Platform) => void }) {
   const info = PLATFORMS[channel.platform];
   const [busy, setBusy] = useState(false);
@@ -150,6 +220,7 @@ function ChannelRow({ channel, surveys, onChanged, onReplaceToken }: { channel: 
   const [notice, setNotice] = useState("");
   const [setup, setSetup] = useState<Setup | null>(null);
   const [confirmOff, setConfirmOff] = useState(false);
+  const [testing, setTesting] = useState(false);
 
   async function act(body: Record<string, unknown>, after?: () => void) {
     setBusy(true);
@@ -176,6 +247,7 @@ function ChannelRow({ channel, surveys, onChanged, onReplaceToken }: { channel: 
   }
 
   const status = statusText(channel);
+  const isInstagram = channel.platform === "instagram";
   const survey = surveys.find((s) => (channel.survey_id ? s.id === channel.survey_id : s.is_default));
   const noQuestions = survey !== undefined && (survey.questions[0]?.count ?? 0) === 0;
   const expiresIn = channel.token_expires_at ? (new Date(channel.token_expires_at).getTime() - Date.now()) / 86_400_000 : null;
@@ -219,6 +291,11 @@ function ChannelRow({ channel, surveys, onChanged, onReplaceToken }: { channel: 
       </div>
 
       {channel.last_error && <ErrorNote>{channel.last_error}</ErrorNote>}
+      {isInstagram && (
+        <p className="note note-attention">
+          <span>Instagram отвечает только тестерам, пока Meta не одобрила приложение. Обычные клиенты сейчас писать боту не смогут.</span>
+        </p>
+      )}
       {noQuestions && (
         <p className="note note-attention">
           <span>
@@ -243,6 +320,9 @@ function ChannelRow({ channel, surveys, onChanged, onReplaceToken }: { channel: 
             Настройка webhook
           </button>
         )}
+        <button type="button" className="link-button" onClick={() => setTesting(true)} disabled={busy}>
+          Отправить тестовое сообщение
+        </button>
         <button type="button" className="link-button" onClick={() => onReplaceToken(channel.platform)}>
           Обновить токен
         </button>
@@ -251,6 +331,11 @@ function ChannelRow({ channel, surveys, onChanged, onReplaceToken }: { channel: 
         </button>
       </div>
 
+      {testing && (
+        <Modal title="Тестовое сообщение" onClose={() => setTesting(false)}>
+          <TestMessage channel={channel} />
+        </Modal>
+      )}
       {setup && (
         <Modal title={`Настройка ${info.label}`} onClose={() => setSetup(null)}>
           <WebhookSetup platform={channel.platform} setup={setup} channelId={channel.id} onDone={onChanged} />

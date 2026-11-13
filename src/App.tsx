@@ -1,10 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
-import { BookOpen, Building2, Inbox, LifeBuoy, ListChecks, LogOut, Menu, Plug, ShieldCheck, Users, Wallet } from "lucide-react";
+import { BookOpen, Building2, Inbox, LifeBuoy, ListChecks, LogOut, Menu, Plug, ShieldCheck, UserRound, Users, Wallet } from "lucide-react";
+import { AccountDialog, SignOutButton, SignOutDialog } from "./components/Account";
 import { Logo, Modal } from "./components/ui";
 import { type ChannelProblem, useChannelProblems } from "./lib/alerts";
 import { daysLeft, longDate } from "./lib/format";
+import { useNewLeadAlert } from "./lib/newLeadAlert";
 import { isConfigured, supabase } from "./lib/supabase";
 import { SUPPORT_CHANGED, useSupportUnread } from "./lib/support";
 import type { Access, Membership, Workspace } from "./lib/types";
@@ -33,8 +35,6 @@ export function useApp(): AppContextValue {
   return value;
 }
 
-const signOut = () => supabase.auth.signOut();
-
 function Message({ title, children, action = true }: { title: string; children: ReactNode; action?: boolean }) {
   return (
     <main className="center-screen">
@@ -42,11 +42,7 @@ function Message({ title, children, action = true }: { title: string; children: 
         <Logo size={48} />
         <h1>{title}</h1>
         <p>{children}</p>
-        {action && (
-          <button type="button" className="button" onClick={signOut}>
-            Выйти
-          </button>
-        )}
+        {action && <SignOutButton />}
       </div>
     </main>
   );
@@ -86,8 +82,10 @@ function RailLink({ item, secondary, onNavigate }: { item: NavItem; secondary?: 
 /** На компьютере полная колонка слева, на телефоне нижнее меню максимум из пяти пунктов. */
 function Rail({ items, platform, note }: { items: NavItem[]; platform?: boolean; note?: string }) {
   const [moreOpen, setMoreOpen] = useState(false);
-  // Выход тоже считается: всего в нижнем меню помещается пять пунктов.
-  const useMore = items.length + 1 > 5;
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [signOutOpen, setSignOutOpen] = useState(false);
+  // «Аккаунт» и «Выйти» тоже считаются: всего в нижнем меню помещается пять пунктов.
+  const useMore = items.length + 2 > 5;
   const primary = useMore ? items.filter((i) => i.primary) : items;
   const secondary = useMore ? items.filter((i) => !i.primary) : [];
   const { pathname } = useLocation();
@@ -109,7 +107,11 @@ function Rail({ items, platform, note }: { items: NavItem[]; platform?: boolean;
           Ещё
         </button>
       )}
-      <button type="button" className={`rail-link rail-exit ${useMore ? "is-secondary" : ""}`} onClick={signOut}>
+      <button type="button" className={`rail-link rail-exit ${useMore ? "is-secondary" : ""}`} onClick={() => setAccountOpen(true)}>
+        <span className="rail-icon"><UserRound size={22} aria-hidden /></span>
+        Аккаунт
+      </button>
+      <button type="button" className={`rail-link rail-signout ${useMore ? "is-secondary" : ""}`} onClick={() => setSignOutOpen(true)}>
         <span className="rail-icon"><LogOut size={22} aria-hidden /></span>
         Выйти
       </button>
@@ -120,13 +122,19 @@ function Rail({ items, platform, note }: { items: NavItem[]; platform?: boolean;
             {secondary.map((item) => (
               <RailLink key={item.to} item={item} onNavigate={() => setMoreOpen(false)} />
             ))}
-            <button type="button" className="rail-link" onClick={signOut}>
+            <button type="button" className="rail-link" onClick={() => { setMoreOpen(false); setAccountOpen(true); }}>
+              <span className="rail-icon"><UserRound size={22} aria-hidden /></span>
+              Аккаунт
+            </button>
+            <button type="button" className="rail-link" onClick={() => { setMoreOpen(false); setSignOutOpen(true); }}>
               <span className="rail-icon"><LogOut size={22} aria-hidden /></span>
               Выйти
             </button>
           </div>
         </Modal>
       )}
+      {accountOpen && <AccountDialog onClose={() => setAccountOpen(false)} />}
+      {signOutOpen && <SignOutDialog onClose={() => setSignOutOpen(false)} />}
     </nav>
   );
 }
@@ -148,17 +156,14 @@ function CabinetShell({ workspace, isPlatformAdmin, children }: { workspace: Wor
   const left = workspace.access_until ? daysLeft(workspace.access_until) : null;
   const unread = useSupportUnread(false, isOwner);
   const channelProblems = useChannelProblems(workspace.id);
+  useNewLeadAlert(workspace.id);
 
   const items: NavItem[] = [
     { to: "/leads", label: "Заявки", icon: Inbox, primary: true },
     { to: "/lessons", label: "Уроки", icon: BookOpen, primary: true },
-    { to: "/payments", label: "Оплаты", icon: Wallet },
-    ...(isOwner
-      ? [
-          { to: "/questions", label: "Вопросы", icon: ListChecks, primary: true },
-          { to: "/channels", label: "Каналы", icon: Plug, badge: channelProblems.length, badgeLabel: "Каналов с проблемой" },
-        ]
-      : []),
+    ...(workspace.can_view_payments ? [{ to: "/payments", label: "Оплаты", icon: Wallet }] : []),
+    ...(workspace.can_edit_survey ? [{ to: "/questions", label: "Вопросы", icon: ListChecks, primary: true }] : []),
+    ...(isOwner ? [{ to: "/channels", label: "Каналы", icon: Plug, badge: channelProblems.length, badgeLabel: "Каналов с проблемой" }] : []),
     { to: "/team", label: "Команда", icon: Users },
     ...(isOwner ? [{ to: "/support", label: "Поддержка", icon: LifeBuoy, badge: unread, primary: true }] : []),
     ...(isPlatformAdmin ? [{ to: "/platform", label: "Админка", icon: ShieldCheck }] : []),
@@ -209,9 +214,7 @@ function ExpiredOwner({ membership }: { membership: Membership }) {
     <main className="expired-page">
       <div className="expired-head">
         <Logo size={44} />
-        <button type="button" className="link-button" onClick={signOut}>
-          Выйти
-        </button>
+        <SignOutButton className="link-button" />
       </div>
       <h1>{membership.is_suspended ? "Доступ приостановлен" : "Срок доступа закончился"}</h1>
       <p>Бот сейчас не отвечает клиентам, данные компании сохранены. Напишите нам, и мы всё решим.</p>
@@ -310,6 +313,8 @@ export function App() {
       name: membership.name,
       role: membership.role,
       access_until: membership.access_until,
+      can_view_payments: membership.can_view_payments,
+      can_edit_survey: membership.can_edit_survey,
     };
     const isOwner = workspace.role === "owner";
     cabinet = (
@@ -320,8 +325,8 @@ export function App() {
             <Route path="/leads/:leadId" element={<LeadsPage />} />
             <Route path="/lessons" element={<LessonsPage />} />
             <Route path="/lessons/:lessonId" element={<LessonsPage />} />
-            <Route path="/payments" element={<PaymentsPage />} />
-            <Route path="/questions" element={isOwner ? <SurveysPage /> : <Navigate to="/leads" replace />} />
+            <Route path="/payments" element={workspace.can_view_payments ? <PaymentsPage /> : <Navigate to="/leads" replace />} />
+            <Route path="/questions" element={workspace.can_edit_survey ? <SurveysPage /> : <Navigate to="/leads" replace />} />
             <Route path="/channels" element={isOwner ? <ChannelsPage /> : <Navigate to="/leads" replace />} />
             <Route path="/team" element={<TeamPage />} />
             <Route

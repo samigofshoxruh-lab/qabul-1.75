@@ -17,7 +17,7 @@ export function TeamPage() {
   const [removing, setRemoving] = useState<Member | null>(null);
 
   const load = useCallback(async () => {
-    const { data, error: e } = await supabase.from("workspace_members").select("user_id, email, role, created_at").eq("workspace_id", workspace.id).order("created_at");
+    const { data, error: e } = await supabase.from("workspace_members").select("user_id, email, role, created_at, can_view_payments, can_edit_survey").eq("workspace_id", workspace.id).order("created_at");
     if (e) setError(e.message);
     else setMembers(data as Member[]);
   }, [workspace.id]);
@@ -60,6 +60,20 @@ export function TeamPage() {
     }
   }
 
+  async function setPermissions(member: Member, patch: Partial<Pick<Member, "can_view_payments" | "can_edit_survey">>) {
+    setError("");
+    setNotice("");
+    const next = { can_view_payments: member.can_view_payments, can_edit_survey: member.can_edit_survey, ...patch };
+    const { error: e } = await supabase.rpc("set_member_permissions", {
+      p_workspace: workspace.id,
+      p_user: member.user_id,
+      p_view_payments: next.can_view_payments,
+      p_edit_survey: next.can_edit_survey,
+    });
+    if (e) setError(errorText(e));
+    await load();
+  }
+
   async function rename(event: FormEvent) {
     event.preventDefault();
     const { error: e } = await supabase.from("workspaces").update({ name: company.trim() }).eq("id", workspace.id);
@@ -75,7 +89,7 @@ export function TeamPage() {
       <header className="page-head">
         <div>
           <h1>Команда</h1>
-          <p className="muted">Администраторы видят заявки и отвечают клиентам. Вопросы и каналы меняет только владелец.</p>
+          <p className="muted">Администраторы видят заявки и отвечают клиентам. Каналы подключает только владелец. Оплаты и анкету владелец открывает администратору галочками.</p>
         </div>
       </header>
 
@@ -94,6 +108,18 @@ export function TeamPage() {
               <button type="button" className="link-button link-danger" onClick={() => setRemoving(member)}>
                 Удалить
               </button>
+            )}
+            {isOwner && member.role !== "owner" && (
+              <span className="member-perms">
+                <label className="check">
+                  <input type="checkbox" checked={member.can_view_payments} onChange={(e) => setPermissions(member, { can_view_payments: e.target.checked })} />
+                  Видит оплаты
+                </label>
+                <label className="check">
+                  <input type="checkbox" checked={member.can_edit_survey} onChange={(e) => setPermissions(member, { can_edit_survey: e.target.checked })} />
+                  Правит анкету
+                </label>
+              </span>
             )}
           </li>
         ))}

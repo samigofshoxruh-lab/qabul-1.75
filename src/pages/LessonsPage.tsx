@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Check, Plus, Search, Trash2, X } from "lucide-react";
+import { ArrowLeft, CalendarDays, Check, List, Plus, Search, Trash2, Users, X } from "lucide-react";
 import { useApp } from "../App";
+import { GroupsManager } from "../components/GroupsManager";
 import { ChannelTag, Empty, ErrorNote, Modal } from "../components/ui";
+import { WeekCalendar } from "../components/WeekCalendar";
+import { expandWeekly, MAX_SERIES, WEEKDAYS } from "../lib/recurrence";
 import { fullTime, money, moneyInput, parseMoney, toLocalInput } from "../lib/format";
-import { errorText, supabase } from "../lib/supabase";
-import type { Lesson, LessonReminder, LessonStudent, Platform } from "../lib/types";
+import { callFunction, errorText, supabase } from "../lib/supabase";
+import type { Lesson, LessonReminder, LessonStudent, Platform, StudentGroup } from "../lib/types";
 
 interface Client {
   id: string;
@@ -23,6 +26,10 @@ export function LessonsPage() {
   const navigate = useNavigate();
   const [lessons, setLessons] = useState<Lesson[] | null>(null);
   const [error, setError] = useState("");
+  const [view, setView] = useState<"list" | "week">("list");
+  const [teacherFilter, setTeacherFilter] = useState("");
+  const [roomFilter, setRoomFilter] = useState("");
+  const [groupsOpen, setGroupsOpen] = useState(false);
 
   const load = useCallback(async () => {
     const { data, error: e } = await supabase
@@ -45,13 +52,20 @@ export function LessonsPage() {
   const groups = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const list = lessons ?? [];
+    const list = (lessons ?? []).filter((l) => (!teacherFilter || l.teacher === teacherFilter) && (!roomFilter || l.room === roomFilter));
     return [
       { title: "Ближайшие", items: list.filter((l) => l.starts_at && new Date(l.starts_at) >= today) },
       { title: "Без даты", items: list.filter((l) => !l.starts_at) },
       { title: "Прошедшие", items: list.filter((l) => l.starts_at && new Date(l.starts_at) < today).reverse() },
     ].filter((g) => g.items.length > 0);
-  }, [lessons]);
+  }, [lessons, teacherFilter, roomFilter]);
+
+  const teachers = useMemo(() => [...new Set((lessons ?? []).map((l) => l.teacher).filter(Boolean) as string[])].sort(), [lessons]);
+  const rooms = useMemo(() => [...new Set((lessons ?? []).map((l) => l.room).filter(Boolean) as string[])].sort(), [lessons]);
+  const filtered = useMemo(
+    () => (lessons ?? []).filter((l) => (!teacherFilter || l.teacher === teacherFilter) && (!roomFilter || l.room === roomFilter)),
+    [lessons, teacherFilter, roomFilter],
+  );
 
   const isNew = lessonId === "new";
   const selected = lessons?.find((l) => l.id === lessonId) ?? null;
@@ -66,10 +80,36 @@ export function LessonsPage() {
               <Plus size={16} aria-hidden /> Новый урок
             </button>
           </div>
+          <div className="lesson-tools">
+            <div className="attend" role="group" aria-label="Вид">
+              <button type="button" className={view === "list" ? "is-yes" : ""} aria-pressed={view === "list"} onClick={() => setView("list")}>
+                <List size={15} aria-hidden /> Список
+              </button>
+              <button type="button" className={view === "week" ? "is-yes" : ""} aria-pressed={view === "week"} onClick={() => setView("week")}>
+                <CalendarDays size={15} aria-hidden /> Неделя
+              </button>
+            </div>
+            <button type="button" className="button" onClick={() => setGroupsOpen(true)}>
+              <Users size={16} aria-hidden /> Группы
+            </button>
+            {teachers.length > 0 && (
+              <select value={teacherFilter} onChange={(e) => setTeacherFilter(e.target.value)} aria-label="Преподаватель">
+                <option value="">Все преподаватели</option>
+                {teachers.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            )}
+            {rooms.length > 0 && (
+              <select value={roomFilter} onChange={(e) => setRoomFilter(e.target.value)} aria-label="Кабинет">
+                <option value="">Все кабинеты</option>
+                {rooms.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            )}
+          </div>
         </header>
         <ErrorNote>{error}</ErrorNote>
         {lessons === null && !error && <p className="muted pad">Загружаем уроки…</p>}
-        <div className="rows">
+        {view === "week" && lessons !== null && <WeekCalendar lessons={filtered} selectedId={lessonId} onOpen={(id) => navigate(`/lessons/${id}`)} />}
+        <div className="rows" hidden={view === "week"}>
           {lessons?.length === 0 && (
             <div className="pad">
               <Empty title="Уроков пока нет">
@@ -90,8 +130,11 @@ export function LessonsPage() {
                       onClick={() => navigate(`/lessons/${lesson.id}`)}
                     >
                       <span className="row-main">
-                        <span className="row-name">{lesson.title}</span>
-                        <span className="row-preview">{lesson.starts_at ? fullTime(lesson.starts_at) : "Время не указано"}</span>
+                        <span className={`row-name ${lesson.cancelled_at ? "is-cancelled" : ""}`}>{lesson.title}</span>
+                        <span className="row-preview">
+                          {lesson.cancelled_at ? "Отменён. " : ""}
+                          {[lesson.starts_at ? fullTime(lesson.starts_at) : "Время не указано", lesson.teacher, lesson.room].filter(Boolean).join(" · ")}
+                        </span>
                       </span>
                       <span className="row-side">
                         <span>{lesson.lesson_students?.[0]?.count ?? 0} уч.</span>
@@ -104,6 +147,12 @@ export function LessonsPage() {
           ))}
         </div>
       </section>
+
+      {groupsOpen && (
+        <Modal title="Группы учеников" onClose={() => setGroupsOpen(false)}>
+          <GroupsManager onChanged={load} />
+        </Modal>
+      )}
 
       <section className="lead-detail" aria-label="Урок">
         {isNew ? (
@@ -129,6 +178,15 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
   const [notes, setNotes] = useState(lesson?.notes ?? "");
   const [price, setPrice] = useState(moneyInput(lesson?.price ?? 0));
   const [remind, setRemind] = useState(lesson?.remind ?? true);
+  const [teacher, setTeacher] = useState(lesson?.teacher ?? "");
+  const [room, setRoom] = useState(lesson?.room ?? "");
+  const [repeatOn, setRepeatOn] = useState(false);
+  const [repeatDays, setRepeatDays] = useState<number[]>([]);
+  const [repeatUntil, setRepeatUntil] = useState("");
+  const [notify, setNotify] = useState<{ kind: "moved" | "cancelled"; old: string | null } | null>(null);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const canPay = workspace.can_view_payments;
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -151,6 +209,8 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
       notes: notes.trim() || null,
       price: parseMoney(price),
       remind,
+      teacher: teacher.trim() || null,
+      room: room.trim() || null,
     };
     try {
       if (lesson) {
@@ -159,6 +219,26 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
         setDirty(false);
         setSaved(true);
         await onChanged();
+        // Время поменяли: предлагаем сообщить ученикам.
+        if (lesson.starts_at && fields.starts_at && new Date(lesson.starts_at).getTime() !== new Date(fields.starts_at).getTime() && !lesson.cancelled_at) {
+          setNotify({ kind: "moved", old: lesson.starts_at });
+        }
+      } else if (repeatOn) {
+        if (!when) throw new Error("Для повторяющихся уроков укажите дату и время первого урока.");
+        if (repeatDays.length === 0) throw new Error("Выберите дни недели, в которые проходят уроки.");
+        if (!repeatUntil) throw new Error("Укажите, до какой даты повторять.");
+        const dates = expandWeekly(when, repeatDays, repeatUntil);
+        if (dates.length === 0) throw new Error("В этот период не попадает ни одного урока.");
+        if (dates.length > MAX_SERIES) throw new Error(`Слишком много уроков: ${dates.length}. За один раз можно создать не больше ${MAX_SERIES}.`);
+        const seriesId = crypto.randomUUID();
+        const { data, error: e } = await supabase
+          .from("lessons")
+          .insert(dates.map((d) => ({ ...fields, starts_at: d.toISOString(), workspace_id: workspace.id, series_id: seriesId })))
+          .select("id, starts_at")
+          .order("starts_at");
+        if (e) throw e;
+        await onChanged();
+        navigate(`/lessons/${data[0].id}`, { replace: true });
       } else {
         const { data, error: e } = await supabase.from("lessons").insert({ ...fields, workspace_id: workspace.id }).select().single();
         if (e) throw e;
@@ -170,6 +250,23 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
     } finally {
       setBusy(false);
     }
+  }
+
+  async function cancelLesson() {
+    setBusy(true);
+    const { error: e } = await supabase.from("lessons").update({ cancelled_at: new Date().toISOString(), cancel_reason: cancelReason.trim() || null }).eq("id", lesson!.id);
+    setBusy(false);
+    setCancelOpen(false);
+    if (e) return setError(errorText(e));
+    await onChanged();
+    setNotify({ kind: "cancelled", old: lesson!.starts_at });
+  }
+
+  async function restoreLesson() {
+    const { error: e } = await supabase.from("lessons").update({ cancelled_at: null, cancel_reason: null, remind: true }).eq("id", lesson!.id);
+    if (e) return setError(errorText(e));
+    setRemind(true);
+    await onChanged();
   }
 
   async function remove() {
@@ -189,8 +286,17 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
         <button type="button" className="icon-button back" onClick={() => navigate("/lessons")} aria-label="Назад к списку">
           <ArrowLeft size={20} aria-hidden />
         </button>
-        <h2>{lesson ? lesson.title : "Новый урок"}</h2>
+        <h2 className={lesson?.cancelled_at ? "is-cancelled" : ""}>{lesson ? lesson.title : "Новый урок"}</h2>
       </header>
+
+      {lesson?.cancelled_at && (
+        <p className="note note-attention">
+          <span>
+            Урок отменён{lesson.cancel_reason ? `: ${lesson.cancel_reason}` : ""}. Напоминания не отправляются.{" "}
+            <button type="button" className="link-button" onClick={restoreLesson}>Вернуть урок</button>
+          </span>
+        </p>
+      )}
 
       <form className="stack" onSubmit={save}>
         <label className="field">
@@ -206,11 +312,54 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
             Длительность, мин
             <input type="number" min={1} max={1440} value={duration} onChange={(e) => { setDuration(e.target.value); touch(); }} />
           </label>
+          {canPay && (
+            <label className="field">
+              Цена, сум
+              <input inputMode="numeric" value={price} maxLength={17} onChange={(e) => { setPrice(moneyInput(parseMoney(e.target.value))); touch(); }} placeholder="0" />
+            </label>
+          )}
+        </div>
+        <div className="lesson-when">
           <label className="field">
-            Цена, сум
-            <input inputMode="numeric" value={price} maxLength={17} onChange={(e) => { setPrice(moneyInput(parseMoney(e.target.value))); touch(); }} placeholder="0" />
+            Преподаватель
+            <input value={teacher} maxLength={120} onChange={(e) => { setTeacher(e.target.value); touch(); }} />
+          </label>
+          <label className="field">
+            Кабинет
+            <input value={room} maxLength={60} onChange={(e) => { setRoom(e.target.value); touch(); }} />
           </label>
         </div>
+        {!lesson && (
+          <fieldset className="repeat-box">
+            <label className="check">
+              <input type="checkbox" checked={repeatOn} onChange={(e) => setRepeatOn(e.target.checked)} />
+              Повторять каждую неделю
+            </label>
+            {repeatOn && (
+              <>
+                <div className="weekday-row" role="group" aria-label="Дни недели">
+                  {WEEKDAYS.map((d) => (
+                    <button
+                      type="button" key={d.id} title={d.long}
+                      className={repeatDays.includes(d.id) ? "is-yes" : ""}
+                      aria-pressed={repeatDays.includes(d.id)}
+                      onClick={() => setRepeatDays((days) => (days.includes(d.id) ? days.filter((x) => x !== d.id) : [...days, d.id]))}
+                    >
+                      {d.short}
+                    </button>
+                  ))}
+                </div>
+                <label className="field">
+                  Повторять до
+                  <input type="date" value={repeatUntil} min={when ? when.slice(0, 10) : undefined} onChange={(e) => setRepeatUntil(e.target.value)} />
+                </label>
+                <p className="muted lesson-hint">
+                  {when && repeatDays.length > 0 && repeatUntil ? `Будет создано уроков: ${Math.min(expandWeekly(when, repeatDays, repeatUntil).length, MAX_SERIES + 1)}.` : "Первый урок берётся из даты и времени выше."}
+                </p>
+              </>
+            )}
+          </fieldset>
+        )}
         <label className="check">
           <input type="checkbox" checked={remind} onChange={(e) => { setRemind(e.target.checked); touch(); }} />
           Бот напомнит ученикам об уроке за день и за час
@@ -232,6 +381,11 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
           {saved && !dirty && <span role="status">Урок сохранён</span>}
           {dirty && lesson && <span className="muted">Есть несохранённые изменения</span>}
           <span className="grow" />
+          {lesson && !lesson.cancelled_at && (
+            <button type="button" className="link-button" onClick={() => setCancelOpen(true)}>
+              Отменить урок
+            </button>
+          )}
           {lesson && (
             <button type="button" className="link-button link-danger" onClick={() => setConfirmDelete(true)}>
               Удалить урок
@@ -241,6 +395,22 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
       </form>
 
       {lesson ? <Students lesson={lesson} onChanged={onChanged} /> : <p className="muted">После создания урока сюда можно будет добавить учеников.</p>}
+
+      {cancelOpen && (
+        <Modal title={`Отменить урок «${lesson!.title}»?`} onClose={() => setCancelOpen(false)}>
+          <div className="stack">
+            <label className="field">
+              Причина (увидят ученики)
+              <input value={cancelReason} maxLength={300} onChange={(e) => setCancelReason(e.target.value)} placeholder="Например, преподаватель заболел" />
+            </label>
+            <div className="button-row">
+              <button type="button" className="button button-danger" disabled={busy} onClick={cancelLesson}>Отменить урок</button>
+              <button type="button" className="button" onClick={() => setCancelOpen(false)}>Не отменять</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {notify && lesson && <NotifyDialog lesson={lesson} kind={notify.kind} old={notify.old} onClose={() => setNotify(null)} />}
 
       {confirmDelete && (
         <Modal title={`Удалить урок «${lesson!.title}»?`} onClose={() => setConfirmDelete(false)}>
@@ -258,6 +428,43 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
         </Modal>
       )}
     </article>
+  );
+}
+
+/** После переноса или отмены предлагаем одной кнопкой написать ученикам через бота. */
+function NotifyDialog({ lesson, kind, old, onClose }: { lesson: Lesson; kind: "moved" | "cancelled"; old: string | null; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<{ sent: number; failed: number; skipped: number } | null>(null);
+
+  async function send() {
+    setBusy(true);
+    setError("");
+    try {
+      setResult(await callFunction<{ sent: number; failed: number; skipped: number }>("lesson-notify", { lesson_id: lesson.id, kind, old_starts_at: old }));
+    } catch (e) {
+      setError(errorText(e));
+    }
+    setBusy(false);
+  }
+
+  return (
+    <Modal title={kind === "moved" ? "Сообщить ученикам о переносе?" : "Сообщить ученикам об отмене?"} onClose={onClose}>
+      <div className="stack">
+        {!result && <p>Бот напишет каждому ученику, который общался с ним, в его канале. Ученикам, добавленным вручную, сообщение не уйдёт.</p>}
+        <ErrorNote>{error}</ErrorNote>
+        {result && (
+          <p className="note" role="status">
+            Отправлено: {result.sent}.{result.failed > 0 ? ` Не дошло: ${result.failed}, подробности видны в переписке.` : ""}
+            {result.skipped > 0 ? ` Без бота: ${result.skipped}, сообщите им сами.` : ""}
+          </p>
+        )}
+        <div className="button-row">
+          {!result && <button type="button" className="button button-primary" onClick={send} disabled={busy}>{busy ? "Отправляем…" : "Сообщить"}</button>}
+          <button type="button" className="button" onClick={onClose}>{result ? "Закрыть" : "Не сообщать"}</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -314,6 +521,10 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [error, setError] = useState("");
+  const [groups, setGroups] = useState<StudentGroup[]>([]);
+  const [groupId, setGroupId] = useState("");
+  const [groupNotice, setGroupNotice] = useState("");
+  const canPay = workspace.can_view_payments;
 
   const load = useCallback(async () => {
     const { data, error: e } = await supabase.from("lesson_students").select("*").eq("lesson_id", lessonId).order("created_at");
@@ -345,6 +556,20 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
       .limit(1000)
       .then(({ data }) => setClients((data ?? []) as unknown as Client[]));
   }, [workspace.id]);
+
+  useEffect(() => {
+    supabase.from("student_groups").select("*").eq("workspace_id", workspace.id).order("name").then(({ data }) => setGroups((data ?? []) as StudentGroup[]));
+  }, [workspace.id]);
+
+  async function addGroup() {
+    if (!groupId) return;
+    setError("");
+    setGroupNotice("");
+    const { data, error: e } = await supabase.rpc("lesson_add_group", { p_lesson: lessonId, p_group: groupId });
+    if (e) return setError(e.message);
+    setGroupNotice(Number(data) > 0 ? `Добавлено учеников: ${data}.` : "Все из этой группы уже записаны.");
+    await Promise.all([load(), onChanged()]);
+  }
 
   const joined = useMemo(() => new Set(students?.map((s) => s.contact_id)), [students]);
   const results = useMemo(() => {
@@ -413,11 +638,22 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
       <h3>Ученики{students && students.length > 0 ? ` (${students.length})` : ""}</h3>
       <ErrorNote>{error}</ErrorNote>
 
+      {groups.length > 0 && (
+        <div className="group-add">
+          <select value={groupId} onChange={(e) => setGroupId(e.target.value)} aria-label="Группа">
+            <option value="">Выберите группу…</option>
+            {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+          <button type="button" className="button" onClick={addGroup} disabled={!groupId}>Добавить всю группу</button>
+          {groupNotice && <span role="status" className="muted">{groupNotice}</span>}
+        </div>
+      )}
+
       {students && students.length > 0 && (
         <p className="lesson-totals">
           <span>Пришли {totals.came} из {students.length}{totals.missed > 0 ? `, не пришли ${totals.missed}` : ""}</span>
-          <span>Оплачено {money(totals.paid)} из {money(totals.price - totals.discount)}</span>
-          {totals.debt > 0 && <span className="debt">Долг {money(totals.debt)}</span>}
+          {canPay && <span>Оплачено {money(totals.paid)} из {money(totals.price - totals.discount)}</span>}
+          {canPay && totals.debt > 0 && <span className="debt">Долг {money(totals.debt)}</span>}
         </p>
       )}
 
@@ -450,14 +686,14 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
               <button type="button" className="icon-button student-remove" onClick={() => remove(student)} aria-label={`Убрать: ${student.name}`}>
                 <Trash2 size={16} aria-hidden />
               </button>
-              <div className="student-pay">
+              {canPay && <div className="student-pay">
                 <MoneyField label="К оплате" value={student.price} onSave={(price) => update(student, { price })} />
                 <MoneyField label="Скидка" value={student.discount} onSave={(discount) => update(student, { discount })} />
                 <MoneyField label="Оплачено" value={student.paid} onSave={(paid) => update(student, { paid })} />
                 <p className={`student-debt ${student.debt > 0 ? "debt" : "muted"}`}>
                   {student.debt > 0 ? `Долг ${money(student.debt)}` : student.price > 0 ? "Оплачено полностью" : "Без оплаты"}
                 </p>
-              </div>
+              </div>}
               <input
                 className="student-note"
                 defaultValue={student.note ?? ""}

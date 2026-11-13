@@ -30,3 +30,10 @@ verify_jwt = true
 
 [functions.platform]
 verify_jwt = true
+
+[functions.lesson-notify]
+verify_jwt = true
+
+# Вызывается триггером базы и pg_cron с заголовком x-cron-secret.
+[functions.support-notify]
+verify_jwt = false

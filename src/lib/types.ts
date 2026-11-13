@@ -5,6 +5,7 @@ export type QuestionType = "choice" | "text" | "phone";
 export interface Option {
   id: string;
   label: string;
+  label_uz?: string;
 }
 
 export interface Workspace {
@@ -12,6 +13,8 @@ export interface Workspace {
   name: string;
   role: "owner" | "admin";
   access_until: string | null;
+  can_view_payments: boolean;
+  can_edit_survey: boolean;
 }
 
 export interface Membership {
@@ -21,6 +24,8 @@ export interface Membership {
   access_until: string | null;
   is_suspended: boolean;
   active: boolean;
+  can_view_payments: boolean;
+  can_edit_survey: boolean;
 }
 
 export interface Access {
@@ -56,6 +61,11 @@ export interface Lesson {
   notes: string | null;
   price: number;
   remind: boolean;
+  teacher: string | null;
+  room: string | null;
+  series_id: string | null;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
   created_at: string;
   lesson_students?: { count: number }[];
 }
@@ -108,6 +118,8 @@ export interface Member {
   email: string | null;
   role: "owner" | "admin";
   created_at: string;
+  can_view_payments: boolean;
+  can_edit_survey: boolean;
 }
 
 export interface Survey {
@@ -117,6 +129,9 @@ export interface Survey {
   welcome_text: string | null;
   completion_text: string | null;
   is_default: boolean;
+  multilingual: boolean;
+  welcome_text_uz: string | null;
+  completion_text_uz: string | null;
 }
 
 export interface Question {
@@ -128,6 +143,20 @@ export interface Question {
   options: Option[];
   allow_other: boolean;
   required: boolean;
+  text_uz: string | null;
+  show_if: { question_id: string; option_ids: string[] } | null;
+  validation: Validation;
+  is_language: boolean;
+}
+
+export type Validation = "none" | "number" | "age" | "phone_uz" | "email";
+
+export interface WorkHours {
+  from: string;
+  to: string;
+  days: number[];
+  text: string;
+  text_uz: string;
 }
 
 export interface Channel {
@@ -163,6 +192,9 @@ export interface Lead {
   last_message_at: string;
   last_message_preview: string | null;
   created_at: string;
+  follow_up_at: string | null;
+  tags: string[];
+  source: string | null;
   contacts: { display_name: string | null; username: string | null; phone: string | null; external_id: string } | null;
   channels: { platform: Platform; name: string } | null;
 }
@@ -194,8 +226,16 @@ export interface SupportMessage {
   sender: "owner" | "platform";
   author_email: string | null;
   text: string;
+  attachment_path: string | null;
+  attachment_name: string | null;
   read_at: string | null;
   created_at: string;
+}
+
+export interface SupportTemplate {
+  id: string;
+  title: string;
+  text: string;
 }
 
 export interface SupportThread {
@@ -205,4 +245,26 @@ export interface SupportThread {
   last_text: string;
   last_sender: "owner" | "platform";
   unread: number;
+  status: "open" | "resolved";
+}
+
+export interface Contact {
+  id: string;
+  display_name: string | null;
+  username: string | null;
+  phone: string | null;
+}
+
+export interface StudentGroup {
+  id: string;
+  workspace_id: string;
+  name: string;
+}
+
+export interface StudentGroupMember {
+  id: string;
+  group_id: string;
+  contact_id: string | null;
+  name: string;
+  phone: string | null;
 }

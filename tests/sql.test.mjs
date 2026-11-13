@@ -925,3 +925,283 @@ test("быстрые ответы и напоминания видны толь�
   assert.equal((await q("select 1 from lesson_reminders where workspace_id = $1", [mine.owner.workspace])).length, 0);
   assert.equal((await q("select 1 from private.term_reminders where workspace_id = $1", [mine.owner.workspace])).length, 0);
 });
+
+async function bare() {
+  const owner = await company("Школа");
+  const survey = await defaultSurvey(owner.workspace);
+  const ch = await channel(owner.workspace);
+  return { owner, survey, ch };
+}
+
+// ---------------------------------------------------------------------------
+// Оплата: история платежей
+// ---------------------------------------------------------------------------
+
+test("платежи складываются в «оплачено», ручная правка и удаление сходятся с историей", async () => {
+  const { owner, student } = await studentOnLesson(600, { price: 300000 });
+  const paid = async () => Number((await one("select paid, debt from lesson_students where id = $1", [student.id])).paid);
+
+  await as("authenticated", owner.id, async (run) => {
+    await run("insert into payments (workspace_id, student_id, amount, method) values ($1, $2, 100000, 'payme')", [owner.workspace, student.id]);
+    await run("insert into payments (workspace_id, student_id, amount, method) values ($1, $2, 50000, 'click')", [owner.workspace, student.id]);
+  });
+  assert.equal(await paid(), 150000);
+  assert.equal(Number((await one("select debt from lesson_students where id = $1", [student.id])).debt), 150000);
+
+  // Скидка уменьшает долг.
+  await as("authenticated", owner.id, (run) => run("update lesson_students set discount = 50000 where id = $1", [student.id]));
+  assert.equal(Number((await one("select debt from lesson_students where id = $1", [student.id])).debt), 100000);
+
+  // Ручная правка в уроке записывается платежом, итог не расходится.
+  await as("authenticated", owner.id, (run) => run("update lesson_students set paid = 200000 where id = $1", [student.id]));
+  assert.equal(await paid(), 200000);
+  const sum = await one("select sum(amount) as s from payments where student_id = $1", [student.id]);
+  assert.equal(Number(sum.s), 200000);
+
+  const last = await one("select id from payments where student_id = $1 order by created_at desc limit 1", [student.id]);
+  await as("authenticated", owner.id, (run) => run("delete from payments where id = $1", [last.id]));
+  assert.equal(await paid(), 150000);
+  await assert.rejects(q("insert into payments (workspace_id, student_id, amount, method) values ($1, $2, 1, 'bitcoin')", [owner.workspace, student.id]), /check constraint/);
+});
+
+test("права сотрудника: платежи и анкета закрыты, пока владелец их не выдаст", async () => {
+  const { owner, student } = await studentOnLesson(600, { price: 100000 });
+  const admin = await staff(owner.workspace);
+  await q("insert into payments (workspace_id, student_id, amount) values ($1, $2, 1000)", [owner.workspace, student.id]);
+
+  // По умолчанию платежи видны, анкету править нельзя.
+  assert.equal((await as("authenticated", admin.id, (run) => run("select 1 from payments"))).length, 1);
+  const survey = await defaultSurvey(owner.workspace);
+  assert.equal((await as("authenticated", admin.id, (run) => run("insert into questions (survey_id, position, text) values ($1, 1, 'Привет?') returning id", [survey.id]).catch(() => []))).length, 0);
+
+  await as("authenticated", owner.id, (run) => run("select set_member_permissions($1, $2, false, true)", [owner.workspace, admin.id]));
+  assert.equal((await as("authenticated", admin.id, (run) => run("select 1 from payments"))).length, 0);
+  assert.equal((await as("authenticated", admin.id, (run) => run("insert into questions (survey_id, position, text) values ($1, 1, 'Привет?') returning id", [survey.id]))).length, 1);
+
+  await assert.rejects(as("authenticated", admin.id, (run) => run("select set_member_permissions($1, $2, true, true)", [owner.workspace, admin.id])), /только владелец/);
+  const access = await as("authenticated", admin.id, (run) => run("select my_access() as a"));
+  assert.deepEqual([access[0].a.memberships[0].can_view_payments, access[0].a.memberships[0].can_edit_survey], [false, true]);
+});
+
+// ---------------------------------------------------------------------------
+// Заявки: источник, теги, напоминание, массовые действия
+// ---------------------------------------------------------------------------
+
+test("источник по умолчанию канал, метка из /start его уточняет; теги и напоминание сохраняются", async () => {
+  const { owner, ch } = await setup();
+  const user = uid("tg");
+  const res = await inbound(ch.id, user, { text: "/start instagram_ads" });
+  const lead = await one("select * from leads where id = $1", [res.lead_id]);
+  assert.equal(lead.source, "instagram_ads");
+
+  const plain = await inbound(ch.id, uid("tg"), { text: "Привет" });
+  assert.equal((await one("select source from leads where id = $1", [plain.lead_id])).source, "telegram");
+
+  await as("authenticated", owner.id, async (run) => {
+    await run("select set_lead_tags($1, array['  VIP ', 'vip', 'теплый', '', 'VIP'])", [lead.id]);
+    await run("select set_lead_follow_up($1, now() - interval '1 hour')", [lead.id]);
+  });
+  const fresh = await one("select tags, follow_up_at from leads where id = $1", [lead.id]);
+  assert.deepEqual(fresh.tags, ["VIP", "vip", "теплый"]);
+  assert.ok(new Date(fresh.follow_up_at) < new Date());
+
+  const other = await company("Чужая");
+  await as("authenticated", other.id, (run) => run("select set_lead_tags($1, array['взлом'])", [lead.id]));
+  assert.deepEqual((await one("select tags from leads where id = $1", [lead.id])).tags, ["VIP", "vip", "теплый"]);
+});
+
+test("массово закрыть и назначить: чужие заявки не трогаются, статистика считает источники", async () => {
+  const { owner, ch } = await bare();
+  const admin = await staff(owner.workspace);
+  const ids = [];
+  for (let i = 0; i < 3; i++) ids.push((await inbound(ch.id, uid("tg"), { text: "Привет" })).lead_id);
+
+  const moved = await as("authenticated", owner.id, (run) => run("select bulk_assign($1, $2) as n", [ids, admin.id]));
+  assert.equal(Number(moved[0].n), 3);
+  const rows = await q("select status, assigned_to from leads where id = any($1)", [ids]);
+  assert.ok(rows.every((r) => r.status === "in_work" && r.assigned_to === admin.id));
+
+  const closed = await as("authenticated", owner.id, (run) => run("select bulk_set_status($1, 'done') as n", [ids]));
+  assert.equal(Number(closed[0].n), 3);
+
+  const stranger = await company("Чужая 2");
+  const denied = await as("authenticated", stranger.id, (run) => run("select bulk_set_status($1, 'rejected') as n", [ids]));
+  assert.equal(Number(denied[0].n), 0);
+  await assert.rejects(as("authenticated", stranger.id, (run) => run("select bulk_assign($1, $2)", [ids, stranger.id])), /не найдена/);
+
+  const stats = await as("authenticated", owner.id, (run) => run("select lead_stats($1, now() - interval '1 day', now() + interval '1 day') as s", [owner.workspace]));
+  const telegram = stats[0].s.by_source.find((s) => s.name === "telegram");
+  assert.deepEqual([Number(telegram.total), Number(telegram.done)], [3, 3]);
+});
+
+// ---------------------------------------------------------------------------
+// Анкета: ветвление, проверка ответов, языки, рабочее время, статистика
+// ---------------------------------------------------------------------------
+
+test("ветвление: вопрос показывается только после нужного ответа", async () => {
+  const { owner, survey, ch } = await bare();
+  const first = await one("insert into questions (survey_id, position, type, text, options) values ($1, 1, 'choice', 'Взрослый?', $2) returning *", [survey.id, JSON.stringify([{ id: "yes", label: "Да" }, { id: "no", label: "Нет" }])]);
+  const adult = await one("insert into questions (survey_id, position, text, show_if) values ($1, 2, 'Где работаете?', $2) returning *", [survey.id, JSON.stringify({ question_id: first.id, option_ids: ["yes"] })]);
+  await q("insert into questions (survey_id, position, text) values ($1, 3, 'Как вас зовут?')", [survey.id]);
+
+  const a = uid("tg");
+  await inbound(ch.id, a, { text: "Привет" });
+  assert.deepEqual(texts(await inbound(ch.id, a, { option: "yes" })), ["Где работаете?"]);
+
+  const b = uid("tg");
+  await inbound(ch.id, b, { text: "Привет" });
+  assert.deepEqual(texts(await inbound(ch.id, b, { option: "no" })), ["Как вас зовут?"]);
+  assert.ok(adult.id);
+  assert.ok(owner.workspace);
+});
+
+test("проверка ответов: возраст числом, телефон +998, почта", async () => {
+  const { survey, ch } = await bare();
+  await q("insert into questions (survey_id, position, text, validation) values ($1, 1, 'Сколько вам лет?', 'age')", [survey.id]);
+  await q("insert into questions (survey_id, position, type, text, validation) values ($1, 2, 'phone', 'Телефон?', 'phone_uz')", [survey.id]);
+
+  const user = uid("tg");
+  await inbound(ch.id, user, { text: "Привет" });
+  assert.match(texts(await inbound(ch.id, user, { text: "двадцать" }))[0], /возраст числом/);
+  assert.match(texts(await inbound(ch.id, user, { text: "250" }))[0], /возраст числом/);
+  assert.deepEqual(texts(await inbound(ch.id, user, { text: "25" })), ["Телефон?"]);
+  assert.match(texts(await inbound(ch.id, user, { text: "+7 999 123 45 67" }))[0], /\+998/);
+  await inbound(ch.id, user, { text: "90 123 45 67" });
+  const contact = await one("select phone from contacts where external_id = $1", [user]);
+  assert.equal(contact.phone, "+998901234567");
+});
+
+test("два языка: выбор в начале, приветствие и вопросы на узбекском", async () => {
+  const { survey, ch } = await bare();
+  await q("update surveys set multilingual = true, welcome_text = 'Привет!', welcome_text_uz = 'Salom!', completion_text = 'Спасибо', completion_text_uz = 'Rahmat' where id = $1", [survey.id]);
+  await q("insert into questions (survey_id, position, type, text, options, is_language) values ($1, 0, 'choice', 'Выберите язык / Tilni tanlang', $2, true)", [survey.id, JSON.stringify([{ id: "ru", label: "Русский" }, { id: "uz", label: "O'zbekcha" }])]);
+  await q("insert into questions (survey_id, position, type, text, text_uz) values ($1, 1, 'text', 'Как вас зовут?', 'Ismingiz nima?')", [survey.id]);
+
+  const user = uid("tg");
+  assert.deepEqual(texts(await inbound(ch.id, user, { text: "Привет" })), ["Выберите язык / Tilni tanlang"]);
+  assert.deepEqual(texts(await inbound(ch.id, user, { option: "uz" })), ["Salom!", "Ismingiz nima?"]);
+  assert.deepEqual(texts(await inbound(ch.id, user, { text: "Ali" })), ["Rahmat"]);
+  assert.equal((await one("select lang from contacts where external_id = $1", [user])).lang, "uz");
+
+  const ru = uid("tg");
+  await inbound(ch.id, ru, { text: "Привет" });
+  assert.deepEqual(texts(await inbound(ch.id, ru, { option: "ru" })), ["Привет!", "Как вас зовут?"]);
+});
+
+test("вне рабочего времени бот отвечает «напишем утром» один раз, внутри молчит", async () => {
+  const { owner, ch } = await bare();
+  await as("authenticated", owner.id, (run) =>
+    run("select set_work_hours($1, $2::jsonb)", [owner.workspace, JSON.stringify({ from: "00:00", to: "00:01", days: [1, 2, 3, 4, 5, 6, 7], text: "Напишем утром", text_uz: "Ertalab yozamiz" })]));
+
+  const user = uid("tg");
+  assert.deepEqual(texts(await inbound(ch.id, user, { text: "Привет" })), ["Напишем утром"]);
+  assert.deepEqual(texts(await inbound(ch.id, user, { text: "Есть кто?" })), []);
+
+  await as("authenticated", owner.id, (run) =>
+    run("select set_work_hours($1, $2::jsonb)", [owner.workspace, JSON.stringify({ from: "00:00", to: "23:59", days: [1, 2, 3, 4, 5, 6, 7], text: "Напишем утром", text_uz: "" })]));
+  assert.deepEqual(texts(await inbound(ch.id, uid("tg"), { text: "Привет" })), []);
+  await assert.rejects(as("authenticated", owner.id, (run) => run("select set_work_hours($1, $2::jsonb)", [owner.workspace, JSON.stringify({ from: "18:00", to: "09:00", days: [1], text: "" })])), /рабочее время/);
+});
+
+test("статистика анкеты: сколько ответили и сколько застряли на вопросе", async () => {
+  const { owner, survey, ch } = await bare();
+  const first = await one("insert into questions (survey_id, position, text) values ($1, 1, 'Имя?') returning *", [survey.id]);
+  const second = await one("insert into questions (survey_id, position, text) values ($1, 2, 'Город?') returning *", [survey.id]);
+
+  const quitter = uid("tg");
+  const a = await inbound(ch.id, quitter, { text: "Привет" });
+  await inbound(ch.id, quitter, { text: "Ali" });
+  await q("update leads set last_message_at = now() - interval '2 days' where id = $1", [a.lead_id]);
+  const finisher = uid("tg");
+  await inbound(ch.id, finisher, { text: "Привет" });
+  await inbound(ch.id, finisher, { text: "Vali" });
+  await inbound(ch.id, finisher, { text: "Tashkent" });
+
+  const stats = (await as("authenticated", owner.id, (run) => run("select survey_stats($1) as s", [survey.id])))[0].s;
+  const byId = Object.fromEntries(stats.questions.map((x) => [x.id, x]));
+  assert.deepEqual([Number(byId[first.id].answered), Number(byId[first.id].stuck)], [2, 0]);
+  assert.deepEqual([Number(byId[second.id].answered), Number(byId[second.id].stuck)], [1, 1]);
+  assert.deepEqual([Number(stats.started), Number(stats.completed)], [2, 1]);
+});
+
+// ---------------------------------------------------------------------------
+// Уроки: группы, отмена, сообщение ученикам
+// ---------------------------------------------------------------------------
+
+test("группа добавляется в урок одной кнопкой, повторно никого не дублирует", async () => {
+  const { owner, lesson, contact } = await studentOnLesson(600);
+  const group = await one("insert into student_groups (workspace_id, name) values ($1, 'Вечерняя') returning *", [owner.workspace]);
+  await q("insert into student_group_members (workspace_id, group_id, contact_id, name) values ($1, $2, $3, 'Анна')", [owner.workspace, group.id, contact.id]);
+  await q("insert into student_group_members (workspace_id, group_id, name, phone) values ($1, $2, 'Борис', '+998901112233')", [owner.workspace, group.id]);
+
+  const next = await one("insert into lessons (workspace_id, title) values ($1, 'Математика') returning *", [owner.workspace]);
+  const added = await as("authenticated", owner.id, (run) => run("select lesson_add_group($1, $2) as n", [next.id, group.id]));
+  assert.equal(Number(added[0].n), 2);
+  const again = await as("authenticated", owner.id, (run) => run("select lesson_add_group($1, $2) as n", [next.id, group.id]));
+  assert.equal(Number(again[0].n), 0);
+  assert.ok(lesson.id);
+
+  const stranger = await company("Чужая 3");
+  await assert.rejects(as("authenticated", stranger.id, (run) => run("select lesson_add_group($1, $2)", [next.id, group.id])), /не найдены/);
+});
+
+test("отмена урока выключает напоминания, перенос и отмена ставят сообщения ученикам в очередь", async () => {
+  const { owner, lesson, student } = await studentOnLesson(26 * 60);
+  const old = lesson.starts_at;
+  await as("authenticated", owner.id, (run) => run("update lessons set starts_at = starts_at + interval '1 day' where id = $1", [lesson.id]));
+
+  const moved = (await q("select lesson_notify_prepare($1, $2, 'moved', $3) as r", [lesson.id, owner.id, old]))[0].r;
+  assert.equal(moved.messages.length, 1);
+  assert.match(moved.messages[0].text, /перенесён/);
+
+  await as("authenticated", owner.id, (run) => run("update lessons set cancelled_at = now(), cancel_reason = 'Болезнь преподавателя' where id = $1", [lesson.id]));
+  assert.equal((await one("select remind from lessons where id = $1", [lesson.id])).remind, false);
+  assert.deepEqual(await claim().then((r) => r.filter((m) => m.external_id === undefined && m.text.includes("Английский"))), []);
+
+  const cancelled = (await q("select lesson_notify_prepare($1, $2, 'cancelled') as r", [lesson.id, owner.id]))[0].r;
+  assert.match(cancelled.messages[0].text, /отменён.*Болезнь преподавателя/);
+
+  // Ученик без бота пропускается, а не ломает рассылку.
+  await q("insert into lesson_students (workspace_id, lesson_id, name) values ($1, $2, 'Без бота')", [owner.workspace, lesson.id]);
+  const skipped = (await q("select lesson_notify_prepare($1, $2, 'cancelled') as r", [lesson.id, owner.id]))[0].r;
+  assert.equal(skipped.skipped, 1);
+  assert.ok(student.id);
+});
+
+// ---------------------------------------------------------------------------
+// Поддержка: статус, вложения, шаблоны
+// ---------------------------------------------------------------------------
+
+test("поддержка: новое сообщение открывает обращение, вложение только из папки своей компании, шаблоны только у главного админа", async () => {
+  const owner = await company("Поддержка");
+  const other = await company("Чужая поддержка");
+  const platform = await signup();
+  await q("insert into platform_admins (user_id) values ($1)", [platform.id]);
+
+  await as("authenticated", owner.id, (run) => run("select support_send($1, 'Помогите', false)", [owner.workspace]));
+  assert.equal((await one("select status from support_thread_state where workspace_id = $1", [owner.workspace])).status, "open");
+
+  await as("authenticated", platform.id, (run) => run("select support_set_status($1, 'resolved')", [owner.workspace]));
+  assert.equal((await one("select status from support_thread_state where workspace_id = $1", [owner.workspace])).status, "resolved");
+  const threads = (await as("authenticated", platform.id, (run) => run("select platform_support_threads() as t")))[0].t;
+  assert.equal(threads.find((t) => t.workspace_id === owner.workspace).status, "resolved");
+
+  // Ответ владельца снова открывает обращение.
+  await as("authenticated", owner.id, (run) => run("select support_send($1, 'Ещё вопрос', false)", [owner.workspace]));
+  assert.equal((await one("select status from support_thread_state where workspace_id = $1", [owner.workspace])).status, "open");
+  await assert.rejects(as("authenticated", other.id, (run) => run("select support_set_status($1, 'resolved')", [owner.workspace])), /Нет доступа/);
+
+  // Вложение: только в папке своей компании, подпись по умолчанию.
+  const ok = await as("authenticated", owner.id, (run) => run("select support_send($1, '', false, $2, 'скрин.png') as id", [owner.workspace, `${owner.workspace}/a-скрин.png`]));
+  assert.equal((await one("select text, attachment_name from support_messages where id = $1", [ok[0].id])).text, "Вложение");
+  await assert.rejects(as("authenticated", owner.id, (run) => run("select support_send($1, 'x', false, $2, 'чужой.png')", [owner.workspace, `${other.workspace}/a.png`])), /вложение/);
+
+  // Новые сообщения владельца ждут отправки в Telegram, сообщения поддержки нет смысла отмечать.
+  assert.ok((await q("select 1 from support_messages where sender = 'owner' and notified_at is null and workspace_id = $1", [owner.workspace])).length >= 1);
+
+  // Шаблоны видит только главный админ.
+  await as("authenticated", platform.id, (run) => run("insert into support_templates (title, text) values ('Тест', 'Текст')"));
+  assert.ok((await as("authenticated", platform.id, (run) => run("select 1 from support_templates"))).length >= 3);
+  assert.equal((await as("authenticated", owner.id, (run) => run("select 1 from support_templates"))).length, 0);
+  await assert.rejects(as("authenticated", owner.id, (run) => run("insert into support_templates (title, text) values ('Взлом', 'x')")), /row-level security/);
+});

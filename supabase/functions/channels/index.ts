@@ -18,6 +18,29 @@ function setupInfo(platform: Platform, secret: string) {
 const webhookUrl = (platform: Platform, channelId: string) =>
   `${functionsUrl()}/webhook/${isMeta(platform) ? "meta" : channelId}`;
 
+/** Понятная подсказка, почему сообщение не дошло. */
+function explainSendError(platform: Platform, message: string): string {
+  if (/\b401\b|unauthor|invalid.*token|token.*(expired|invalid)|OAuthException|\(#190\)|code.?190/i.test(message)) {
+    return "Токен недействителен или истёк. Выпустите новый токен и подключите канал заново.";
+  }
+  if (platform === "telegram" && /blocked|chat not found|user is deactivated|Forbidden/i.test(message)) {
+    return "Клиент заблокировал бота или ещё ни разу не писал ему. Telegram не даёт писать первым.";
+  }
+  if (isMeta(platform) && /24|window|outside.*allowed|\(#10\)|\(#200\)|2534022|2018278/i.test(message)) {
+    return "Meta разрешает отвечать только в течение 24 часов после последнего сообщения клиента. Попросите его написать снова.";
+  }
+  if (platform === "instagram" && /permission|not.*authorized|role|tester|\(#3\)|\(#100\)/i.test(message)) {
+    return "Instagram отвечает только тем, у кого есть роль в приложении Meta (тестер), пока Meta не одобрила приложение. Добавьте аккаунт как Instagram Tester.";
+  }
+  if (platform === "whatsapp" && /131047|re-engagement|template/i.test(message)) {
+    return "WhatsApp разрешает свободный текст только в течение 24 часов после сообщения клиента.";
+  }
+  if (platform === "viber" && /receiver|not subscribed|unsubscribed/i.test(message)) {
+    return "Клиент не подписан на бота в Viber.";
+  }
+  return "Причина неизвестна. Нажмите «Проверить»: если проверка проходит, проблема в самом получателе.";
+}
+
 const text = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
 
 /**
@@ -175,6 +198,28 @@ Deno.serve(async (req) => {
         const warning = await activate(db, channel, identity, creds, secrets.webhook_secret);
         const { data: fresh } = await db.from("channels").select("*").eq("id", channel.id).single();
         return json({ channel: fresh, warning });
+      }
+      case "test": {
+        const channel = await ownedChannel(db, user.id, body.channel_id);
+        if (typeof body.contact_id !== "string") throw new ChannelError("Выберите, кому отправить тест");
+        // Тест уходит только тому, кто уже писал в этот канал: так он не превращается в рассылку.
+        const { data: contact, error: contactError } = await db.from("contacts").select("id, external_id, meta")
+          .eq("id", body.contact_id).eq("channel_id", channel.id).maybeSingle();
+        if (contactError) throw contactError;
+        if (!contact) throw new ChannelError("Выберите того, кто уже писал в этот канал", 404);
+        const secrets = await loadSecrets(db, channel.id);
+        if (!secrets) throw new ChannelError("Подключите канал заново: настройки не найдены");
+        try {
+          await adapters[channel.platform as Platform].send({
+            creds: await credentialsOf(secrets),
+            channelName: channel.name,
+            contact: { externalId: contact.external_id, meta: contact.meta },
+          }, { text: "Тестовое сообщение от Qabul. Если вы его видите, канал отвечает." });
+          return json({ ok: true });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return json({ ok: false, error: message.slice(0, 500), hint: explainSendError(channel.platform as Platform, message) });
+        }
       }
       case "disconnect": {
         const channel = await ownedChannel(db, user.id, body.channel_id);

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Download, Search, Send } from "lucide-react";
+import { ArrowLeft, BarChart3, Bell, BellOff, CheckSquare, Download, Search, Send, X } from "lucide-react";
 import { useApp } from "../App";
 import { QuickReplies } from "../components/QuickReplies";
+import { Modal } from "../components/ui";
+import { useSoundSetting } from "../lib/newLeadAlert";
 import { ChannelTag, Empty, ErrorNote } from "../components/ui";
 import { contactName, csvCell, fullTime, money, shortTime, STATUS_LABEL } from "../lib/format";
 import { PLATFORMS } from "../lib/platforms";
@@ -12,19 +14,22 @@ import type { Answer, Lead, LeadStatus, Lesson, LessonStudent, Member, Message, 
 const LEAD_COLUMNS = "*, contacts(display_name, username, phone, external_id), channels(platform, name)";
 const POLL_MS = 15_000;
 
-type Tab = "new" | "in_work" | "collecting" | "closed";
+type Tab = "new" | "in_work" | "mine" | "collecting" | "closed";
 
 const TABS: { id: Tab; label: string; statuses: LeadStatus[] }[] = [
   { id: "new", label: "Новые", statuses: ["new"] },
   { id: "in_work", label: "В работе", statuses: ["in_work"] },
+  { id: "mine", label: "Мои заявки", statuses: [] },
   { id: "collecting", label: "В опросе", statuses: ["collecting"] },
   { id: "closed", label: "Закрытые", statuses: ["done", "rejected"] },
 ];
 
 const tabOf = (status: LeadStatus): Tab => TABS.find((t) => t.statuses.includes(status))!.id;
+const isOverdue = (lead: Lead) =>
+  Boolean(lead.follow_up_at && new Date(lead.follow_up_at).getTime() < Date.now() && (lead.status === "new" || lead.status === "in_work"));
 
 export function LeadsPage() {
-  const { workspace } = useApp();
+  const { workspace, userId } = useApp();
   const { leadId } = useParams();
   const navigate = useNavigate();
   const [leads, setLeads] = useState<Lead[] | null>(null);
@@ -32,6 +37,23 @@ export function LeadsPage() {
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
   const [hasChannels, setHasChannels] = useState(true);
+  const [channelFilter, setChannelFilter] = useState("all");
+  const [assigneeFilter, setAssigneeFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [onlyOverdue, setOnlyOverdue] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [assignTo, setAssignTo] = useState("");
+  const [members, setMembers] = useState<Member[]>([]);
+  const [showStats, setShowStats] = useState(false);
+  const [sound, setSound] = useSoundSetting();
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    supabase.from("workspace_members").select("user_id, email, role, created_at").eq("workspace_id", workspace.id)
+      .then(({ data }) => setMembers((data ?? []) as Member[]));
+  }, [workspace.id]);
 
   const load = useCallback(async () => {
     const { data, error: e } = await supabase
@@ -70,9 +92,19 @@ export function LeadsPage() {
   }, [load, workspace.id]);
 
   const counts = useMemo(() => {
-    const result: Record<Tab, number> = { new: 0, in_work: 0, collecting: 0, closed: 0 };
-    for (const lead of leads ?? []) result[tabOf(lead.status)]++;
+    const result: Record<Tab, number> = { new: 0, in_work: 0, mine: 0, collecting: 0, closed: 0 };
+    for (const lead of leads ?? []) {
+      result[tabOf(lead.status)]++;
+      if (lead.assigned_to === userId && lead.status === "in_work") result.mine++;
+    }
     return result;
+  }, [leads, userId]);
+
+  const overdueCount = useMemo(() => (leads ?? []).filter(isOverdue).length, [leads]);
+  const channelOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const lead of leads ?? []) if (lead.channels) map.set(lead.channel_id, lead.channels.name);
+    return [...map.entries()];
   }, [leads]);
 
   useEffect(() => {
@@ -96,13 +128,63 @@ export function LeadsPage() {
   const visible = useMemo(() => {
     const statuses = TABS.find((t) => t.id === tab)!.statuses;
     const q = query.trim().toLowerCase();
-    return (leads ?? []).filter((lead) => {
-      if (!q && !statuses.includes(lead.status)) return false;
-      if (!q) return true;
-      return [lead.contacts?.display_name, lead.contacts?.username, lead.contacts?.phone, lead.last_message_preview]
+    const from = dateFrom ? new Date(`${dateFrom}T00:00:00`).getTime() : null;
+    const to = dateTo ? new Date(`${dateTo}T23:59:59`).getTime() : null;
+    const list = (leads ?? []).filter((lead) => {
+      if (channelFilter !== "all" && lead.channel_id !== channelFilter) return false;
+      if (assigneeFilter === "me" && lead.assigned_to !== userId) return false;
+      if (assigneeFilter === "none" && lead.assigned_to) return false;
+      if (assigneeFilter !== "all" && assigneeFilter !== "me" && assigneeFilter !== "none" && lead.assigned_to !== assigneeFilter) return false;
+      const created = new Date(lead.created_at).getTime();
+      if (from !== null && created < from) return false;
+      if (to !== null && created > to) return false;
+      if (onlyOverdue && !isOverdue(lead)) return false;
+      if (!q) {
+        if (tab === "mine") return lead.assigned_to === userId && lead.status === "in_work";
+        return statuses.includes(lead.status);
+      }
+      return [lead.contacts?.display_name, lead.contacts?.username, lead.contacts?.phone, lead.last_message_preview, lead.source, ...(lead.tags ?? [])]
         .some((v) => v?.toLowerCase().includes(q));
     });
-  }, [leads, tab, query]);
+    // Просроченные «вернуться к клиенту» всплывают наверх.
+    return [...list].sort((a, b) => Number(isOverdue(b)) - Number(isOverdue(a)));
+  }, [leads, tab, query, channelFilter, assigneeFilter, dateFrom, dateTo, onlyOverdue, userId]);
+
+  const filtersOn = channelFilter !== "all" || assigneeFilter !== "all" || Boolean(dateFrom) || Boolean(dateTo) || onlyOverdue;
+
+  function togglePick(id: string) {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function stopSelecting() {
+    setSelecting(false);
+    setPicked(new Set());
+    setAssignTo("");
+  }
+
+  async function bulk(kind: "done" | "rejected" | "assign") {
+    if (picked.size === 0) return;
+    setError("");
+    setNotice("");
+    const ids = [...picked];
+    const { data, error: e } =
+      kind === "assign"
+        ? await supabase.rpc("bulk_assign", { p_lead_ids: ids, p_user: assignTo || userId })
+        : await supabase.rpc("bulk_set_status", { p_lead_ids: ids, p_status: kind });
+    if (e) {
+      setError(e.message);
+      return;
+    }
+    const done = Number(data);
+    setNotice(done === ids.length ? `Готово: ${done}.` : `Обработано ${done} из ${ids.length}. Остальные нельзя изменить: у клиента уже есть другая открытая заявка или заявка ещё в опросе.`);
+    stopSelecting();
+    await load();
+  }
 
   async function exportCsv() {
     const ids = visible.map((l) => l.id);
@@ -139,6 +221,15 @@ export function LeadsPage() {
         <header className="lead-list-head">
           <div className="lead-list-title">
             <h1>Заявки</h1>
+            <button type="button" className="icon-button" onClick={() => setSound(!sound)} title={sound ? "Звук о новых заявках включён" : "Звук о новых заявках выключен"} aria-label={sound ? "Выключить звук о новых заявках" : "Включить звук о новых заявках"} aria-pressed={sound}>
+              {sound ? <Bell size={18} aria-hidden /> : <BellOff size={18} aria-hidden />}
+            </button>
+            <button type="button" className="icon-button" onClick={() => setShowStats(true)} title="Какой источник приносит больше" aria-label="Статистика по источникам">
+              <BarChart3 size={18} aria-hidden />
+            </button>
+            <button type="button" className={`icon-button ${selecting ? "is-on" : ""}`} onClick={() => (selecting ? stopSelecting() : setSelecting(true))} title="Выбрать несколько заявок" aria-label="Выбрать несколько заявок" aria-pressed={selecting}>
+              <CheckSquare size={18} aria-hidden />
+            </button>
             <button type="button" className="icon-button" onClick={exportCsv} disabled={visible.length === 0} title="Скачать CSV" aria-label="Скачать CSV">
               <Download size={18} aria-hidden />
             </button>
@@ -147,6 +238,49 @@ export function LeadsPage() {
             <Search size={16} aria-hidden />
             <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Имя, телефон или текст" aria-label="Поиск по заявкам" />
           </label>
+          <div className="lead-filters">
+            <select value={channelFilter} onChange={(e) => setChannelFilter(e.target.value)} aria-label="Канал">
+              <option value="all">Все каналы</option>
+              {channelOptions.map(([id, name]) => (
+                <option key={id} value={id}>{name}</option>
+              ))}
+            </select>
+            <select value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)} aria-label="Ответственный">
+              <option value="all">Все ответственные</option>
+              <option value="me">Я</option>
+              <option value="none">Не назначены</option>
+              {members.filter((m) => m.user_id !== userId).map((m) => (
+                <option key={m.user_id} value={m.user_id}>{m.email}</option>
+              ))}
+            </select>
+            <label className="lead-date">С <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} /></label>
+            <label className="lead-date">По <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} /></label>
+            {overdueCount > 0 && (
+              <button type="button" className={`chip chip-bad ${onlyOverdue ? "is-on" : ""}`} onClick={() => setOnlyOverdue(!onlyOverdue)} aria-pressed={onlyOverdue}>
+                Просрочено: {overdueCount}
+              </button>
+            )}
+            {filtersOn && (
+              <button type="button" className="link-button" onClick={() => { setChannelFilter("all"); setAssigneeFilter("all"); setDateFrom(""); setDateTo(""); setOnlyOverdue(false); }}>
+                Сбросить
+              </button>
+            )}
+          </div>
+          {selecting && (
+            <div className="bulk-bar" role="group" aria-label="Действия с выбранными заявками">
+              <span>Выбрано: {picked.size}</span>
+              <button type="button" className="button" onClick={() => bulk("done")} disabled={picked.size === 0}>Завершить</button>
+              <button type="button" className="button" onClick={() => bulk("rejected")} disabled={picked.size === 0}>Отказ</button>
+              <select value={assignTo} onChange={(e) => setAssignTo(e.target.value)} aria-label="Кому назначить">
+                <option value="">Мне</option>
+                {members.filter((m) => m.user_id !== userId).map((m) => (
+                  <option key={m.user_id} value={m.user_id}>{m.email}</option>
+                ))}
+              </select>
+              <button type="button" className="button" onClick={() => bulk("assign")} disabled={picked.size === 0}>Назначить</button>
+              <button type="button" className="link-button" onClick={() => setPicked(new Set(visible.map((l) => l.id)))}>Выбрать все</button>
+            </div>
+          )}
           {!query && (
             <div className="tabs" role="tablist" aria-label="Статус заявки">
               {TABS.map((t) => (
@@ -160,11 +294,12 @@ export function LeadsPage() {
         </header>
 
         <ErrorNote>{error}</ErrorNote>
+        {notice && <p className="note" role="status">{notice}</p>}
         {leads === null && !error && <p className="muted pad">Загружаем заявки…</p>}
 
         {leads !== null && visible.length === 0 && (
           <div className="pad">
-            {query ? (
+            {query || filtersOn ? (
               <p className="muted">Ничего не найдено.</p>
             ) : !hasChannels && workspace.role === "owner" && leads.length === 0 ? (
               <Empty title="Заявок пока нет">
@@ -186,12 +321,25 @@ export function LeadsPage() {
                 type="button"
                 className={`row ${lead.id === leadId ? "is-selected" : ""}`}
                 aria-current={lead.id === leadId ? "true" : undefined}
-                onClick={() => navigate(`/leads/${lead.id}`)}
+                onClick={() => (selecting ? togglePick(lead.id) : navigate(`/leads/${lead.id}`))}
               >
+                {selecting && <input type="checkbox" checked={picked.has(lead.id)} readOnly tabIndex={-1} aria-label={`Выбрать: ${contactName(lead)}`} />}
                 {lead.channels && <ChannelTag platform={lead.channels.platform} />}
                 <span className="row-main">
                   <span className="row-name">{contactName(lead)}</span>
                   <span className="row-preview">{lead.last_message_preview || "Нет сообщений"}</span>
+                  {(isOverdue(lead) || lead.tags?.length > 0 || (lead.follow_up_at && lead.status !== "done")) && (
+                    <span className="row-meta">
+                      {isOverdue(lead) ? (
+                        <span className="chip chip-bad">Просрочено: вернуться {shortTime(lead.follow_up_at!)}</span>
+                      ) : lead.follow_up_at && (lead.status === "new" || lead.status === "in_work") ? (
+                        <span className="chip">Вернуться {shortTime(lead.follow_up_at)}</span>
+                      ) : null}
+                      {lead.tags?.slice(0, 3).map((t) => (
+                        <span className="chip" key={t}>{t}</span>
+                      ))}
+                    </span>
+                  )}
                 </span>
                 <span className="row-side">
                   <time dateTime={lead.last_message_at}>{shortTime(lead.last_message_at)}</time>
@@ -206,6 +354,12 @@ export function LeadsPage() {
           ))}
         </ul>
       </section>
+
+      {showStats && (
+        <Modal title="Какой источник приносит больше" onClose={() => setShowStats(false)}>
+          <LeadStats />
+        </Modal>
+      )}
 
       <section className="lead-detail" aria-label="Заявка">
         {selected ? (
@@ -472,6 +626,7 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
       </header>
 
       <ErrorNote>{error}</ErrorNote>
+      <LeadMeta lead={lead} onChanged={onChanged} setError={setError} />
       {lead.handoff && lead.status === "new" && <p className="note note-attention">Клиент не смог пройти опрос или попросил живого человека. Ответьте ему лично.</p>}
 
       <div className="detail-switch" role="tablist" aria-label="Раздел заявки">
@@ -559,5 +714,146 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
         </div>
       </div>
     </article>
+  );
+}
+
+/* ------------------------------------------------- Напоминание, теги, источник */
+
+const toLocalInput = (iso: string) => {
+  const d = new Date(iso);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+};
+
+function LeadMeta({ lead, onChanged, setError }: { lead: Lead; onChanged: () => Promise<void> | void; setError: (value: string) => void }) {
+  const [tag, setTag] = useState("");
+  const [source, setSource] = useState(lead.source ?? "");
+  const open = lead.status === "new" || lead.status === "in_work";
+
+  async function call(name: string, args: Record<string, unknown>) {
+    setError("");
+    const { error: e } = await supabase.rpc(name, args);
+    if (e) setError(e.message);
+    await onChanged();
+  }
+
+  const setFollowUp = (value: string) => call("set_lead_follow_up", { p_lead_id: lead.id, p_at: value ? new Date(value).toISOString() : null });
+  const saveTags = (tags: string[]) => call("set_lead_tags", { p_lead_id: lead.id, p_tags: tags });
+
+  function addTag() {
+    const parts = tag.split(",").map((t) => t.trim()).filter(Boolean);
+    setTag("");
+    if (parts.length > 0) saveTags([...(lead.tags ?? []), ...parts]);
+  }
+
+  return (
+    <div className="lead-meta">
+      {open && (
+        <label className="field field-inline">
+          Вернуться к клиенту
+          <input type="datetime-local" value={lead.follow_up_at ? toLocalInput(lead.follow_up_at) : ""} onChange={(e) => setFollowUp(e.target.value)} />
+          {lead.follow_up_at && <button type="button" className="link-button" onClick={() => setFollowUp("")}>Убрать</button>}
+          {isOverdue(lead) && <span className="chip chip-bad">Просрочено</span>}
+        </label>
+      )}
+      <label className="field field-inline">
+        Источник
+        <input value={source} maxLength={60} onChange={(e) => setSource(e.target.value)} onBlur={() => source !== (lead.source ?? "") && call("set_lead_source", { p_lead_id: lead.id, p_source: source })} placeholder="Например, instagram_ads" />
+      </label>
+      <div className="tag-editor">
+        <span className="tag-label">Теги</span>
+        {(lead.tags ?? []).map((t) => (
+          <span className="chip" key={t}>
+            {t}
+            <button type="button" className="chip-x" onClick={() => saveTags(lead.tags.filter((x) => x !== t))} aria-label={`Убрать тег ${t}`}>
+              <X size={12} aria-hidden />
+            </button>
+          </span>
+        ))}
+        <input
+          value={tag}
+          maxLength={30}
+          placeholder="Добавить тег"
+          aria-label="Новый тег"
+          onChange={(e) => setTag(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addTag();
+            }
+          }}
+          onBlur={addTag}
+          disabled={(lead.tags ?? []).length >= 10}
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------- Статистика */
+
+interface StatRow {
+  name: string;
+  total: number;
+  done: number;
+}
+
+function LeadStats() {
+  const { workspace } = useApp();
+  const [days, setDays] = useState(30);
+  const [data, setData] = useState<{ by_source: StatRow[]; by_tag: StatRow[] } | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setData(null);
+    const to = new Date(Date.now() + 86_400_000).toISOString();
+    const from = new Date(Date.now() - days * 86_400_000).toISOString();
+    supabase.rpc("lead_stats", { p_workspace: workspace.id, p_from: from, p_to: to }).then(({ data: result, error: e }) => {
+      if (e) setError(e.message);
+      else setData(result as { by_source: StatRow[]; by_tag: StatRow[] });
+    });
+  }, [workspace.id, days]);
+
+  const table = (rows: StatRow[], empty: string) =>
+    rows.length === 0 ? (
+      <p className="muted">{empty}</p>
+    ) : (
+      <table className="stat-table">
+        <thead>
+          <tr><th>Название</th><th>Заявок</th><th>Завершено</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.name}>
+              <td>{PLATFORMS[r.name as keyof typeof PLATFORMS]?.label ?? r.name}</td>
+              <td>{r.total}</td>
+              <td>{r.done}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+
+  return (
+    <div className="stack">
+      <label className="field">
+        Период
+        <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
+          <option value={7}>7 дней</option>
+          <option value={30}>30 дней</option>
+          <option value={90}>90 дней</option>
+          <option value={365}>Год</option>
+        </select>
+      </label>
+      <ErrorNote>{error}</ErrorNote>
+      {!data && !error && <p className="muted">Считаем…</p>}
+      {data && (
+        <>
+          <h3>По источникам</h3>
+          {table(data.by_source, "За этот период заявок не было.")}
+          <h3>По тегам</h3>
+          {table(data.by_tag, "Теги ещё не ставили. Их можно добавить в карточке заявки.")}
+        </>
+      )}
+    </div>
   );
 }

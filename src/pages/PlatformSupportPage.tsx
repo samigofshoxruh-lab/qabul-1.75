@@ -13,6 +13,7 @@ export function PlatformSupportPage({ onActivity }: { onActivity: () => void }) 
   const [threads, setThreads] = useState<SupportThread[] | null>(null);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [error, setError] = useState("");
+  const [filter, setFilter] = useState<"open" | "resolved" | "all">("open");
 
   const loadThreads = useCallback(async () => {
     const { data, error: e } = await supabase.rpc("platform_support_threads");
@@ -50,10 +51,21 @@ export function PlatformSupportPage({ onActivity }: { onActivity: () => void }) 
       <section className="lead-list" aria-label="Обращения">
         <header className="lead-list-head lessons-head">
           <h1>Поддержка</h1>
+          <label className="field field-inline">
+            Показать
+            <select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
+              <option value="open">Открытые</option>
+              <option value="resolved">Решённые</option>
+              <option value="all">Все</option>
+            </select>
+          </label>
         </header>
         <ErrorNote>{error}</ErrorNote>
         {threads === null && !error && <p className="muted pad">Загружаем обращения…</p>}
         <ul className="rows">
+          {threads && threads.length > 0 && threads.filter((t) => filter === "all" || t.status === filter).length === 0 && (
+            <li className="pad muted">В этом разделе обращений нет.</li>
+          )}
           {threads?.length === 0 && (
             <li className="pad">
               <Empty title="Обращений пока нет">
@@ -61,7 +73,7 @@ export function PlatformSupportPage({ onActivity }: { onActivity: () => void }) 
               </Empty>
             </li>
           )}
-          {threads?.map((thread) => (
+          {threads?.filter((t) => filter === "all" || t.status === filter).map((thread) => (
             <li key={thread.workspace_id}>
               <button
                 type="button"
@@ -70,7 +82,7 @@ export function PlatformSupportPage({ onActivity }: { onActivity: () => void }) 
                 onClick={() => navigate(`/platform/support/${thread.workspace_id}`)}
               >
                 <span className="row-main">
-                  <span className="row-name">{thread.name}</span>
+                  <span className="row-name">{thread.name}{thread.status === "resolved" && <span className="chip"> Решено</span>}</span>
                   <span className="row-preview">
                     {thread.last_sender === "platform" ? "Вы: " : ""}
                     {thread.last_text}
