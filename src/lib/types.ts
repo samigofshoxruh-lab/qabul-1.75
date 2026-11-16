@@ -65,6 +65,8 @@ export interface Lesson {
   teacher: string | null;
   room: string | null;
   series_id: string | null;
+  repeat_days: number[];
+  repeat_until: string | null;
   cancelled_at: string | null;
   cancel_reason: string | null;
   created_at: string;
@@ -81,6 +83,7 @@ export interface LessonStudent {
   attended: boolean | null;
   price: number;
   discount: number;
+  months_billed: number;
   paid: number;
   debt: number;
 }

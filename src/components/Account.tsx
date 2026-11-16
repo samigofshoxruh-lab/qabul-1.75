@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from "react";
 import { LogOut, UserRound } from "lucide-react";
 import { ErrorNote, Modal } from "./ui";
 import { errorText, supabase } from "../lib/supabase";
@@ -12,34 +12,82 @@ export function useUserEmail(): string {
   return email;
 }
 
-/** Выход всегда через вопрос: случайное нажатие не должно выбрасывать из кабинета. */
-export function SignOutDialog({ onClose }: { onClose: () => void }) {
+export interface AnchorRect {
+  top: number;
+  left: number;
+  right: number;
+  bottom: number;
+  width: number;
+}
+
+export function rectOf(element: Element): AnchorRect {
+  const r = element.getBoundingClientRect();
+  return { top: r.top, left: r.left, right: r.right, bottom: r.bottom, width: r.width };
+}
+
+/**
+ * Вопрос «Выйти?» появляется рядом с нажатой кнопкой и ничего не закрывает.
+ * Слева от меню он выходит вправо, в нижнем меню телефона поднимается вверх.
+ */
+export function SignOutPopover({ rect, onClose }: { rect: AnchorRect; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const stayRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    stayRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onDown = (e: Event) => {
+      const target = e.target as Element;
+      if (ref.current?.contains(target) || target.closest?.("[data-signout-trigger]")) return;
+      onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [onClose]);
+
+  const width = Math.min(290, window.innerWidth - 16);
+  const phone = window.matchMedia("(max-width: 760px)").matches;
+  const style = phone
+    ? {
+        width,
+        bottom: window.innerHeight - rect.top + 10,
+        left: Math.max(8, Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - 8)),
+      }
+    : { width, bottom: Math.max(8, window.innerHeight - rect.bottom), left: rect.right + 10 };
+
   return (
-    <Modal title="Выйти из аккаунта?" onClose={onClose}>
-      <div className="stack">
-        <p>Вы уверены? Чтобы войти снова, понадобится пароль.</p>
-        <div className="form-actions">
-          <button type="button" className="button button-primary" onClick={() => supabase.auth.signOut()}>
-            Выйти
-          </button>
-          <button type="button" className="button" onClick={onClose}>
-            Остаться
-          </button>
-        </div>
+    <div className="popover" role="alertdialog" aria-label="Выйти из аккаунта" style={style} ref={ref}>
+      <div>
+        <h3>Выйти из аккаунта?</h3>
+        <p>Чтобы войти снова, понадобится пароль.</p>
       </div>
-    </Modal>
+      <div className="popover-actions">
+        <button type="button" className="button button-primary" onClick={() => supabase.auth.signOut()}>
+          Выйти
+        </button>
+        <button type="button" className="button" ref={stayRef} onClick={onClose}>
+          Остаться
+        </button>
+      </div>
+    </div>
   );
 }
 
-/** Кнопка «Выйти» с подтверждением для экранов без бокового меню. */
+/** Кнопка «Выйти» с вопросом рядом для экранов без бокового меню. */
 export function SignOutButton({ className = "button", children = "Выйти" }: { className?: string; children?: ReactNode }) {
-  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState<AnchorRect | null>(null);
   return (
     <>
-      <button type="button" className={className} onClick={() => setOpen(true)}>
+      <button type="button" className={className} data-signout-trigger onClick={(e: MouseEvent<HTMLButtonElement>) => setRect((r) => (r ? null : rectOf(e.currentTarget)))}>
         {children}
       </button>
-      {open && <SignOutDialog onClose={() => setOpen(false)} />}
+      {rect && <SignOutPopover rect={rect} onClose={() => setRect(null)} />}
     </>
   );
 }
@@ -114,19 +162,26 @@ export function AccountDialog({ onClose }: { onClose: () => void }) {
   const email = useUserEmail();
   const [confirmOut, setConfirmOut] = useState(false);
   return (
-    <>
-      <Modal title="Аккаунт" onClose={onClose}>
-        <div className="stack">
-          <p className="account-email">
-            <UserRound size={18} aria-hidden /> <span>{email || "…"}</span>
-          </p>
-          <ChangePassword />
+    <Modal title="Аккаунт" onClose={onClose}>
+      <div className="stack">
+        <p className="account-email">
+          <UserRound size={18} aria-hidden /> <span>{email || "…"}</span>
+        </p>
+        <ChangePassword />
+        {confirmOut ? (
+          <div className="confirm-inline" role="alert">
+            <p>Вы уверены? Чтобы войти снова, понадобится пароль.</p>
+            <div className="popover-actions">
+              <button type="button" className="button button-primary" onClick={() => supabase.auth.signOut()}>Выйти</button>
+              <button type="button" className="button" onClick={() => setConfirmOut(false)}>Остаться</button>
+            </div>
+          </div>
+        ) : (
           <button type="button" className="button" onClick={() => setConfirmOut(true)}>
             <LogOut size={16} aria-hidden /> Выйти
           </button>
-        </div>
-      </Modal>
-      {confirmOut && <SignOutDialog onClose={() => setConfirmOut(false)} />}
-    </>
+        )}
+      </div>
+    </Modal>
   );
 }

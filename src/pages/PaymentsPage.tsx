@@ -8,7 +8,8 @@ import { METHODS, METHOD_LABEL, monthRange, nowLocalInput } from "../lib/payment
 import { callFunction, errorText, supabase } from "../lib/supabase";
 import type { LessonStudent, Payment, PaymentMethod } from "../lib/types";
 
-type Row = LessonStudent & { lessons: { id: string; title: string; starts_at: string | null } | null };
+type Row = LessonStudent & { lessons: { id: string; title: string; starts_at: string | null; repeat_days: number[] } | null };
+const monthly = (row: Row) => (row.lessons?.repeat_days?.length ?? 0) > 0;
 type PaymentRow = Payment & { lesson_students: { name: string; lessons: { title: string } | null } | null };
 
 interface Person {
@@ -46,11 +47,13 @@ export function PaymentsPage() {
 
   const loadRows = useCallback(async () => {
     const all: Row[] = [];
+    // Новый месяц начисляется ночью, но при открытии оплат обновляем сразу.
+    await supabase.rpc("refresh_billing", { p_workspace: workspace.id });
     // Supabase отдаёт не больше 1000 строк за раз, а итоги должны считаться по всем.
     for (let from = 0; ; from += PAGE) {
       const { data, error: e } = await supabase
         .from("lesson_students")
-        .select("*, lessons(id, title, starts_at)")
+        .select("*, lessons(id, title, starts_at, repeat_days)")
         .eq("workspace_id", workspace.id)
         .or("price.gt.0,paid.gt.0")
         .order("created_at")
@@ -223,7 +226,8 @@ function DebtsTab({ rows, onChanged, setError }: { rows: Row[] | null; onChanged
                     <span className="muted">
                       {row.lessons?.starts_at ? `, ${fullTime(row.lessons.starts_at)}` : ""}
                       {row.attended !== null ? `, ${ATTENDED[String(row.attended)]}` : ""}
-                      {row.discount > 0 ? `, скидка ${money(row.discount)}` : ""}
+                      {monthly(row) ? `, ${money(row.price - row.discount)} в месяц, начислено месяцев: ${row.months_billed}` : ""}
+                      {row.discount > 0 ? `, скидка ${money(row.discount)}${monthly(row) ? " в месяц" : ""}` : ""}
                       {row.paid > 0 ? `, уже оплачено ${money(row.paid)}` : ""}
                     </span>
                   </span>
@@ -329,6 +333,11 @@ function PayForm({ row, onDone, setError }: { row: Row; onDone: () => Promise<vo
       <div className="pay-form-actions">
         <button className="button" disabled={saving || value <= 0}>{saving ? "Сохраняем…" : "Записать платёж"}</button>
         <button type="button" className="button" onClick={() => setAmount(moneyInput(row.debt))}>Весь долг: {money(row.debt)}</button>
+        {monthly(row) && row.price - row.discount > 0 && (
+          <button type="button" className="button" onClick={() => setAmount(moneyInput(row.price - row.discount))}>
+            За месяц: {money(row.price - row.discount)}
+          </button>
+        )}
       </div>
       {(method === "payme" || method === "click") && (
         <p className="pay-hint" style={{ gridColumn: "1 / -1" }}>

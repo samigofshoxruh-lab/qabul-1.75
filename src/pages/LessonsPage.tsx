@@ -5,7 +5,7 @@ import { useApp } from "../App";
 import { GroupsManager } from "../components/GroupsManager";
 import { ChannelTag, Empty, ErrorNote, Modal } from "../components/ui";
 import { WeekCalendar } from "../components/WeekCalendar";
-import { expandWeekly, MAX_SERIES, WEEKDAYS } from "../lib/recurrence";
+import { isRecurring, nextStart, occurrencesBetween, repeatSummary, WEEKDAYS, ymd } from "../lib/recurrence";
 import { fullTime, money, moneyInput, parseMoney, toLocalInput } from "../lib/format";
 import { callFunction, errorText, supabase } from "../lib/supabase";
 import type { Lesson, LessonReminder, LessonStudent, Platform, StudentGroup } from "../lib/types";
@@ -53,10 +53,16 @@ export function LessonsPage() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const list = (lessons ?? []).filter((l) => (!teacherFilter || l.teacher === teacherFilter) && (!roomFilter || l.room === roomFilter));
+    // Повторяющийся урок считается ближайшим, пока у него есть занятия впереди.
+    const upcoming = (l: Lesson) => {
+      if (!l.starts_at) return false;
+      const next = nextStart(l, today);
+      return next !== null && next >= today;
+    };
     return [
-      { title: "Ближайшие", items: list.filter((l) => l.starts_at && new Date(l.starts_at) >= today) },
+      { title: "Ближайшие", items: list.filter(upcoming).sort((a, b) => nextStart(a, today)!.getTime() - nextStart(b, today)!.getTime()) },
       { title: "Без даты", items: list.filter((l) => !l.starts_at) },
-      { title: "Прошедшие", items: list.filter((l) => l.starts_at && new Date(l.starts_at) < today).reverse() },
+      { title: "Прошедшие", items: list.filter((l) => l.starts_at && !upcoming(l)).reverse() },
     ].filter((g) => g.items.length > 0);
   }, [lessons, teacherFilter, roomFilter]);
 
@@ -133,7 +139,7 @@ export function LessonsPage() {
                         <span className={`row-name ${lesson.cancelled_at ? "is-cancelled" : ""}`}>{lesson.title}</span>
                         <span className="row-preview">
                           {lesson.cancelled_at ? "Отменён. " : ""}
-                          {[lesson.starts_at ? fullTime(lesson.starts_at) : "Время не указано", lesson.teacher, lesson.room].filter(Boolean).join(" · ")}
+                          {[isRecurring(lesson) ? repeatSummary(lesson) : lesson.starts_at ? fullTime(lesson.starts_at) : "Время не указано", lesson.teacher, lesson.room].filter(Boolean).join(" · ")}
                         </span>
                       </span>
                       <span className="row-side">
@@ -180,9 +186,9 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
   const [remind, setRemind] = useState(lesson?.remind ?? true);
   const [teacher, setTeacher] = useState(lesson?.teacher ?? "");
   const [room, setRoom] = useState(lesson?.room ?? "");
-  const [repeatOn, setRepeatOn] = useState(false);
-  const [repeatDays, setRepeatDays] = useState<number[]>([]);
-  const [repeatUntil, setRepeatUntil] = useState("");
+  const [repeatOn, setRepeatOn] = useState(lesson ? isRecurring(lesson) : false);
+  const [repeatDays, setRepeatDays] = useState<number[]>(lesson?.repeat_days ?? []);
+  const [repeatUntil, setRepeatUntil] = useState(lesson?.repeat_until ?? "");
   const [notify, setNotify] = useState<{ kind: "moved" | "cancelled"; old: string | null } | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
@@ -211,8 +217,16 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
       remind,
       teacher: teacher.trim() || null,
       room: room.trim() || null,
+      repeat_days: repeatOn ? [...repeatDays].sort() : [],
+      repeat_until: repeatOn ? repeatUntil || null : null,
     };
     try {
+      if (repeatOn) {
+        if (!when) throw new Error("Для повторяющегося урока укажите дату и время первого занятия.");
+        if (repeatDays.length === 0) throw new Error("Выберите дни недели, в которые проходит урок.");
+        if (!repeatUntil) throw new Error("Укажите, до какой даты повторять урок.");
+        if (repeatUntil < when.slice(0, 10)) throw new Error("Дата окончания раньше первого занятия.");
+      }
       if (lesson) {
         const { error: e } = await supabase.from("lessons").update(fields).eq("id", lesson.id);
         if (e) throw e;
@@ -220,25 +234,9 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
         setSaved(true);
         await onChanged();
         // Время поменяли: предлагаем сообщить ученикам.
-        if (lesson.starts_at && fields.starts_at && new Date(lesson.starts_at).getTime() !== new Date(fields.starts_at).getTime() && !lesson.cancelled_at) {
+        if (!repeatOn && lesson.starts_at && fields.starts_at && new Date(lesson.starts_at).getTime() !== new Date(fields.starts_at).getTime() && !lesson.cancelled_at) {
           setNotify({ kind: "moved", old: lesson.starts_at });
         }
-      } else if (repeatOn) {
-        if (!when) throw new Error("Для повторяющихся уроков укажите дату и время первого урока.");
-        if (repeatDays.length === 0) throw new Error("Выберите дни недели, в которые проходят уроки.");
-        if (!repeatUntil) throw new Error("Укажите, до какой даты повторять.");
-        const dates = expandWeekly(when, repeatDays, repeatUntil);
-        if (dates.length === 0) throw new Error("В этот период не попадает ни одного урока.");
-        if (dates.length > MAX_SERIES) throw new Error(`Слишком много уроков: ${dates.length}. За один раз можно создать не больше ${MAX_SERIES}.`);
-        const seriesId = crypto.randomUUID();
-        const { data, error: e } = await supabase
-          .from("lessons")
-          .insert(dates.map((d) => ({ ...fields, starts_at: d.toISOString(), workspace_id: workspace.id, series_id: seriesId })))
-          .select("id, starts_at")
-          .order("starts_at");
-        if (e) throw e;
-        await onChanged();
-        navigate(`/lessons/${data[0].id}`, { replace: true });
       } else {
         const { data, error: e } = await supabase.from("lessons").insert({ ...fields, workspace_id: workspace.id }).select().single();
         if (e) throw e;
@@ -260,6 +258,14 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
     if (e) return setError(errorText(e));
     await onChanged();
     setNotify({ kind: "cancelled", old: lesson!.starts_at });
+  }
+
+  async function endSeries() {
+    if (!window.confirm("Занятия по этому уроку закончатся сегодня. Следующий месяц ученикам начисляться не будет. Закончить?")) return;
+    const { error: e } = await supabase.from("lessons").update({ repeat_until: ymd(new Date()) }).eq("id", lesson!.id);
+    if (e) return setError(errorText(e));
+    setRepeatUntil(ymd(new Date()));
+    await onChanged();
   }
 
   async function restoreLesson() {
@@ -314,7 +320,7 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
           </label>
           {canPay && (
             <label className="field">
-              Цена, сум
+              {repeatOn ? "Цена за месяц, сум" : "Цена, сум"}
               <input inputMode="numeric" value={price} maxLength={17} onChange={(e) => { setPrice(moneyInput(parseMoney(e.target.value))); touch(); }} placeholder="0" />
             </label>
           )}
@@ -329,37 +335,35 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
             <input value={room} maxLength={60} onChange={(e) => { setRoom(e.target.value); touch(); }} />
           </label>
         </div>
-        {!lesson && (
-          <fieldset className="repeat-box">
-            <label className="check">
-              <input type="checkbox" checked={repeatOn} onChange={(e) => setRepeatOn(e.target.checked)} />
-              Повторять каждую неделю
-            </label>
-            {repeatOn && (
-              <>
-                <div className="weekday-row" role="group" aria-label="Дни недели">
-                  {WEEKDAYS.map((d) => (
-                    <button
-                      type="button" key={d.id} title={d.long}
-                      className={repeatDays.includes(d.id) ? "is-yes" : ""}
-                      aria-pressed={repeatDays.includes(d.id)}
-                      onClick={() => setRepeatDays((days) => (days.includes(d.id) ? days.filter((x) => x !== d.id) : [...days, d.id]))}
-                    >
-                      {d.short}
-                    </button>
-                  ))}
-                </div>
-                <label className="field">
-                  Повторять до
-                  <input type="date" value={repeatUntil} min={when ? when.slice(0, 10) : undefined} onChange={(e) => setRepeatUntil(e.target.value)} />
-                </label>
-                <p className="muted lesson-hint">
-                  {when && repeatDays.length > 0 && repeatUntil ? `Будет создано уроков: ${Math.min(expandWeekly(when, repeatDays, repeatUntil).length, MAX_SERIES + 1)}.` : "Первый урок берётся из даты и времени выше."}
-                </p>
-              </>
-            )}
-          </fieldset>
-        )}
+        <fieldset className="repeat-box">
+          <label className="check">
+            <input type="checkbox" checked={repeatOn} onChange={(e) => { setRepeatOn(e.target.checked); touch(); }} />
+            Урок повторяется каждую неделю
+          </label>
+          {repeatOn && (
+            <>
+              <div className="weekday-row" role="group" aria-label="Дни недели">
+                {WEEKDAYS.map((d) => (
+                  <button
+                    type="button" key={d.id} title={d.long}
+                    className={repeatDays.includes(d.id) ? "is-yes" : ""}
+                    aria-pressed={repeatDays.includes(d.id)}
+                    onClick={() => { setRepeatDays((days) => (days.includes(d.id) ? days.filter((x) => x !== d.id) : [...days, d.id])); touch(); }}
+                  >
+                    {d.short}
+                  </button>
+                ))}
+              </div>
+              <label className="field">
+                Повторять до
+                <input type="date" value={repeatUntil} min={when ? when.slice(0, 10) : undefined} onChange={(e) => { setRepeatUntil(e.target.value); touch(); }} />
+              </label>
+              <p className="muted lesson-hint">
+                Это один урок с повторами: вся информация и ученики хранятся один раз. Время берётся из поля выше, оплата помесячная.
+              </p>
+            </>
+          )}
+        </fieldset>
         <label className="check">
           <input type="checkbox" checked={remind} onChange={(e) => { setRemind(e.target.checked); touch(); }} />
           Бот напомнит ученикам об уроке за день и за час
@@ -381,9 +385,14 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
           {saved && !dirty && <span role="status">Урок сохранён</span>}
           {dirty && lesson && <span className="muted">Есть несохранённые изменения</span>}
           <span className="grow" />
-          {lesson && !lesson.cancelled_at && (
+          {lesson && !lesson.cancelled_at && !isRecurring(lesson) && (
             <button type="button" className="link-button" onClick={() => setCancelOpen(true)}>
               Отменить урок
+            </button>
+          )}
+          {lesson && isRecurring(lesson) && nextStart(lesson) !== null && (
+            <button type="button" className="link-button" onClick={endSeries}>
+              Закончить повторы сегодня
             </button>
           )}
           {lesson && (
@@ -524,9 +533,48 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
   const [groups, setGroups] = useState<StudentGroup[]>([]);
   const [groupId, setGroupId] = useState("");
   const [groupNotice, setGroupNotice] = useState("");
+  const [attendance, setAttendance] = useState<Record<string, boolean>>({});
+  const [day, setDay] = useState("");
   const canPay = workspace.can_view_payments;
+  const recurring = isRecurring(lesson);
+
+  // Занятия, за которые можно отметить посещаемость: прошедшие и ближайшие две недели.
+  const days = useMemo(() => {
+    if (!recurring) return [];
+    const to = new Date();
+    to.setDate(to.getDate() + 14);
+    const from = new Date(lesson.starts_at ?? Date.now());
+    return occurrencesBetween(lesson, from, to).map((d) => ymd(d)).reverse();
+  }, [lesson, recurring]);
+
+  useEffect(() => {
+    if (!recurring || day || days.length === 0) return;
+    const today = ymd(new Date());
+    setDay(days.find((d) => d <= today) ?? days[days.length - 1]);
+  }, [days, day, recurring]);
+
+  const loadAttendance = useCallback(async () => {
+    if (!recurring) return;
+    const { data } = await supabase.from("lesson_attendance").select("student_id, day, attended").eq("lesson_id", lessonId);
+    setAttendance(Object.fromEntries((data ?? []).map((r) => [`${r.student_id}|${r.day}`, r.attended as boolean])));
+  }, [lessonId, recurring]);
+
+  useEffect(() => {
+    loadAttendance();
+  }, [loadAttendance]);
+
+  async function markDay(student: LessonStudent, value: boolean | null) {
+    setError("");
+    const { error: e } = await supabase.rpc("lesson_set_attendance", { p_student: student.id, p_day: day, p_attended: value });
+    if (e) setError(e.message);
+    await loadAttendance();
+  }
+
+  const stateOn = (student: LessonStudent): boolean | null => (recurring ? (attendance[`${student.id}|${day}`] ?? null) : student.attended);
 
   const load = useCallback(async () => {
+    // Новый месяц начисляется ночью, но при открытии урока обновляем сразу.
+    if (isRecurring(lesson) && workspace.can_view_payments) await supabase.rpc("refresh_billing", { p_workspace: workspace.id });
     const { data, error: e } = await supabase.from("lesson_students").select("*").eq("lesson_id", lessonId).order("created_at");
     if (e) {
       setError(e.message);
@@ -624,14 +672,15 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
   const totals = useMemo(() => {
     const list = students ?? [];
     return {
-      came: list.filter((s) => s.attended === true).length,
-      missed: list.filter((s) => s.attended === false).length,
+      came: list.filter((s) => stateOn(s) === true).length,
+      missed: list.filter((s) => stateOn(s) === false).length,
       paid: list.reduce((sum, s) => sum + s.paid, 0),
-      price: list.reduce((sum, s) => sum + s.price, 0),
-      discount: list.reduce((sum, s) => sum + s.discount, 0),
+      // Начислено: цена за месяц минус скидка, за каждый начисленный месяц.
+      due: list.reduce((sum, s) => sum + (s.price - s.discount) * s.months_billed, 0),
       debt: list.reduce((sum, s) => sum + s.debt, 0),
     };
-  }, [students]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [students, attendance, day]);
 
   return (
     <section className="stack" aria-label="Ученики">
@@ -649,10 +698,27 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
         </div>
       )}
 
+      {recurring && students && students.length > 0 && (
+        <label className="field field-inline">
+          Посещаемость за
+          {days.length === 0 ? (
+            <span className="muted">занятий пока нет</span>
+          ) : (
+            <select value={day} onChange={(e) => setDay(e.target.value)} aria-label="Дата занятия">
+              {days.map((d) => (
+                <option key={d} value={d}>
+                  {new Date(`${d}T12:00:00`).toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "long" })}
+                </option>
+              ))}
+            </select>
+          )}
+        </label>
+      )}
+
       {students && students.length > 0 && (
         <p className="lesson-totals">
           <span>Пришли {totals.came} из {students.length}{totals.missed > 0 ? `, не пришли ${totals.missed}` : ""}</span>
-          {canPay && <span>Оплачено {money(totals.paid)} из {money(totals.price - totals.discount)}</span>}
+          {canPay && <span>Оплачено {money(totals.paid)} из {money(totals.due)}{recurring ? " (помесячно)" : ""}</span>}
           {canPay && totals.debt > 0 && <span className="debt">Долг {money(totals.debt)}</span>}
         </p>
       )}
@@ -665,33 +731,39 @@ function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Prom
                 <strong>{student.name}</strong>
                 {student.phone && <a href={`tel:${student.phone}`}>{student.phone}</a>}
               </span>
-              <div className="attend" role="group" aria-label={`Посещаемость: ${student.name}`}>
-                <button
-                  type="button"
-                  className={student.attended === true ? "is-yes" : ""}
-                  aria-pressed={student.attended === true}
-                  onClick={() => update(student, { attended: student.attended === true ? null : true })}
-                >
-                  <Check size={15} aria-hidden /> Пришёл
-                </button>
-                <button
-                  type="button"
-                  className={student.attended === false ? "is-no" : ""}
-                  aria-pressed={student.attended === false}
-                  onClick={() => update(student, { attended: student.attended === false ? null : false })}
-                >
-                  <X size={15} aria-hidden /> Не пришёл
-                </button>
-              </div>
+              {(!recurring || day) && (
+                <div className="attend" role="group" aria-label={`Посещаемость: ${student.name}`}>
+                  <button
+                    type="button"
+                    className={stateOn(student) === true ? "is-yes" : ""}
+                    aria-pressed={stateOn(student) === true}
+                    onClick={() => (recurring ? markDay(student, stateOn(student) === true ? null : true) : update(student, { attended: student.attended === true ? null : true }))}
+                  >
+                    <Check size={15} aria-hidden /> Пришёл
+                  </button>
+                  <button
+                    type="button"
+                    className={stateOn(student) === false ? "is-no" : ""}
+                    aria-pressed={stateOn(student) === false}
+                    onClick={() => (recurring ? markDay(student, stateOn(student) === false ? null : false) : update(student, { attended: student.attended === false ? null : false }))}
+                  >
+                    <X size={15} aria-hidden /> Не пришёл
+                  </button>
+                </div>
+              )}
               <button type="button" className="icon-button student-remove" onClick={() => remove(student)} aria-label={`Убрать: ${student.name}`}>
                 <Trash2 size={16} aria-hidden />
               </button>
               {canPay && <div className="student-pay">
-                <MoneyField label="К оплате" value={student.price} onSave={(price) => update(student, { price })} />
+                <MoneyField label={recurring ? "Цена в месяц" : "К оплате"} value={student.price} onSave={(price) => update(student, { price })} />
                 <MoneyField label="Скидка" value={student.discount} onSave={(discount) => update(student, { discount })} />
                 <MoneyField label="Оплачено" value={student.paid} onSave={(paid) => update(student, { paid })} />
                 <p className={`student-debt ${student.debt > 0 ? "debt" : "muted"}`}>
-                  {student.debt > 0 ? `Долг ${money(student.debt)}` : student.price > 0 ? "Оплачено полностью" : "Без оплаты"}
+                  {student.debt > 0
+                    ? `Долг ${money(student.debt)}${recurring ? `, начислено месяцев: ${student.months_billed}` : ""}`
+                    : student.price > 0
+                      ? recurring ? `Оплачено за ${student.months_billed} мес.` : "Оплачено полностью"
+                      : "Без оплаты"}
                 </p>
               </div>}
               <input

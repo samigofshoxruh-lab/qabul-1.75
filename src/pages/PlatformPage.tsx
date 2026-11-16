@@ -323,10 +323,10 @@ function CompanyDetail({
       <p className="company-facts">
         <span>Создана {longDate(company.created_at)}</span>
         <span>Заявок: {company.leads_count}</span>
-        <span>
-          Каналы:{" "}
+        <span className="facts-channels">
+          <span>Каналы:</span>
           {company.channels.length === 0
-            ? "не подключены"
+            ? <span>не подключены</span>
             : company.channels.map((platform, i) => <ChannelTag key={`${platform}${i}`} platform={platform} />)}
         </span>
       </p>

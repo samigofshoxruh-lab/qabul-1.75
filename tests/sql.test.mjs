@@ -1238,3 +1238,115 @@ test("права админа платформы: без права на под�
   await assert.rejects(q("update platform_admins set can_manage_admins = false where user_id = $1", [main.id]), /хотя бы один активный админ/);
   await assert.rejects(q("delete from platform_admins where user_id = $1", [main.id]), /хотя бы один активный админ/);
 });
+
+// ---------------------------------------------------------------------------
+// Повторяющийся урок: одна запись, помесячная оплата, посещаемость по датам
+// ---------------------------------------------------------------------------
+
+test("ближайшее занятие повторяющегося урока: нужный день недели, то же время, после окончания пусто", async () => {
+  const days = [1, 3, 5];
+  const row = await one(
+    "select private.lesson_next_start((date_trunc('week', now()) - interval '21 days' + interval '2 hours'), $1::smallint[], (now() at time zone 'Asia/Tashkent')::date + 30) as n",
+    [days],
+  );
+  const next = new Date(row.n);
+  assert.ok(next > new Date());
+  const local = await one("select extract(isodow from $1::timestamptz at time zone 'Asia/Tashkent')::int as d, to_char($1::timestamptz at time zone 'Asia/Tashkent', 'HH24:MI') as t", [row.n]);
+  assert.ok(days.includes(local.d));
+  const start = await one("select to_char((date_trunc('week', now()) - interval '21 days' + interval '2 hours') at time zone 'Asia/Tashkent', 'HH24:MI') as t");
+  assert.equal(local.t, start.t);
+
+  const ended = await one("select private.lesson_next_start(now() - interval '60 days', $1::smallint[], (now() at time zone 'Asia/Tashkent')::date - 5) as n", [days]);
+  assert.equal(ended.n, null);
+  const single = await one("select private.lesson_next_start(now() + interval '3 days', '{}'::smallint[], null) as n");
+  assert.ok(new Date(single.n) > new Date());
+});
+
+test("оплата повторяющегося урока помесячная: долг растёт с каждым месяцем и останавливается на дате окончания", async () => {
+  const owner = await company("Помесячная");
+  const lesson = await one(
+    "insert into lessons (workspace_id, title, starts_at, price, repeat_days, repeat_until) values ($1, 'Английский B1', now() - interval '70 days', 300000, '{1,3,5}', (now() at time zone 'Asia/Tashkent')::date + 60) returning *",
+    [owner.workspace],
+  );
+  const monthsSince = async (days) => Number((await one(
+    `select ((extract(year from now() at time zone 'Asia/Tashkent') - extract(year from (now() - make_interval(days => $1)) at time zone 'Asia/Tashkent')) * 12
+       + extract(month from now() at time zone 'Asia/Tashkent') - extract(month from (now() - make_interval(days => $1)) at time zone 'Asia/Tashkent'))::int + 1 as m`, [days])).m);
+
+  const student = await one("insert into lesson_students (workspace_id, lesson_id, name, created_at) values ($1, $2, 'Анна', now() - interval '70 days') returning *", [owner.workspace, lesson.id]);
+  assert.equal(student.months_billed, await monthsSince(70));
+  assert.ok(student.months_billed >= 3);
+  assert.equal(Number(student.debt), 300000 * student.months_billed);
+
+  await q("update lesson_students set discount = 50000 where id = $1", [student.id]);
+  await q("insert into payments (workspace_id, student_id, amount, method) values ($1, $2, 250000, 'click')", [owner.workspace, student.id]);
+  const after = await one("select debt, months_billed from lesson_students where id = $1", [student.id]);
+  assert.equal(Number(after.debt), 250000 * after.months_billed - 250000);
+
+  // Занятия закончились 40 дней назад: новых месяцев не начисляется.
+  await q("update lessons set repeat_until = (now() at time zone 'Asia/Tashkent')::date - 40 where id = $1", [lesson.id]);
+  const stopped = await one("select months_billed from lesson_students where id = $1", [student.id]);
+  // Запись была 70 дней назад, занятия закончились 40 дней назад: месяцев стало не больше, чем при активном уроке.
+  assert.ok(stopped.months_billed >= 1);
+  assert.ok(stopped.months_billed <= after.months_billed);
+
+  // Ученик, записанный сегодня, не должен платить за прошлые месяцы.
+  await q("update lessons set repeat_until = (now() at time zone 'Asia/Tashkent')::date + 60 where id = $1", [lesson.id]);
+  const fresh = await one("insert into lesson_students (workspace_id, lesson_id, name) values ($1, $2, 'Новый') returning months_billed, debt", [owner.workspace, lesson.id]);
+  assert.equal(fresh.months_billed, 1);
+  assert.equal(Number(fresh.debt), 300000);
+
+  // Обычный урок оплачивается один раз.
+  const single = await one("insert into lessons (workspace_id, title, starts_at, price) values ($1, 'Разовый', now() - interval '70 days', 100000) returning id", [owner.workspace]);
+  const once = await one("insert into lesson_students (workspace_id, lesson_id, name, created_at) values ($1, $2, 'Борис', now() - interval '70 days') returning months_billed", [owner.workspace, single.id]);
+  assert.equal(once.months_billed, 1);
+});
+
+test("старые серии по одной строке на занятие склеиваются в один урок, платежи не теряются", async () => {
+  const owner = await company("Склейка");
+  const series = (await one("select gen_random_uuid() as id")).id;
+  const monday = "date_trunc('week', now()) + interval '7 days' + interval '3 hours'";
+  const ids = [];
+  for (const shift of ["0 days", "2 days", "4 days", "7 days"]) {
+    const l = await one(`insert into lessons (workspace_id, title, starts_at, series_id, price) values ($1, 'Урок по английскому B63', ${monday} + interval '${shift}', $2, 100000) returning id`, [owner.workspace, series]);
+    ids.push(l.id);
+    await q("insert into lesson_students (workspace_id, lesson_id, name) values ($1, $2, 'Анна')", [owner.workspace, l.id]);
+  }
+  const second = await one("select id from lesson_students where lesson_id = $1", [ids[1]]);
+  await q("insert into payments (workspace_id, student_id, amount, method) values ($1, $2, 70000, 'cash')", [owner.workspace, second.id]);
+
+  const merged = await one("select private.merge_lesson_series() as n");
+  assert.ok(Number(merged.n) >= 3);
+
+  const left = await q("select * from lessons where series_id = $1", [series]);
+  assert.equal(left.length, 1);
+  assert.deepEqual(left[0].repeat_days, [1, 3, 5]);
+  const students = await q("select * from lesson_students where lesson_id = $1", [left[0].id]);
+  assert.equal(students.length, 1);
+  assert.equal(Number(students[0].paid), 70000);
+});
+
+test("посещаемость по датам и напоминания перед ближайшим занятием повторяющегося урока", async () => {
+  const { owner, ch, lesson, student } = await studentOnLesson(30);
+  await q(
+    `update lessons set repeat_days = array[extract(isodow from starts_at at time zone 'Asia/Tashkent')::smallint],
+       repeat_until = (now() at time zone 'Asia/Tashkent')::date + 30, starts_at = starts_at - interval '14 days' where id = $1`,
+    [lesson.id],
+  );
+
+  const first = await claimFor(ch.id);
+  assert.equal(first.length, 1);
+  assert.match(first[0].text, /Английский/);
+  assert.deepEqual(await claimFor(ch.id), []);
+
+  await as("authenticated", owner.id, async (run) => {
+    await run("select lesson_set_attendance($1, current_date, true)", [student.id]);
+    await run("select lesson_set_attendance($1, current_date, false)", [student.id]);
+  });
+  assert.equal((await one("select attended from lesson_attendance where student_id = $1", [student.id])).attended, false);
+  await as("authenticated", owner.id, (run) => run("select lesson_set_attendance($1, current_date, null)", [student.id]));
+  assert.equal((await q("select 1 from lesson_attendance where student_id = $1", [student.id])).length, 0);
+
+  const stranger = await company("Чужая посещаемость");
+  await assert.rejects(as("authenticated", stranger.id, (run) => run("select lesson_set_attendance($1, current_date, true)", [student.id])), /не найден/);
+  assert.equal((await as("authenticated", stranger.id, (run) => run("select 1 from lesson_attendance"))).length, 0);
+});

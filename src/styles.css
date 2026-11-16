@@ -697,3 +697,39 @@ button.chip.is-on { outline: 2px solid var(--danger); }
 .admin-log time { color: var(--ink-soft); }
 .inline-row { display: flex; gap: 8px; }
 .inline-row input { flex: 1; min-width: 0; }
+
+.field-inline select { min-height: 38px; }
+
+/* ===== Аккуратный вид: значки, окно выхода, фильтры, права ===== */
+.channel-badge { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex: none; border-radius: 7px; vertical-align: middle; }
+.channel-badge svg { width: 15px; height: 15px; display: block; }
+.row .channel-badge { margin-top: 1px; }
+.facts-channels { display: inline-flex; align-items: center; gap: 6px; }
+.company-facts { align-items: center; gap: 6px 18px; }
+
+.popover { position: fixed; z-index: 1000; display: grid; gap: 14px; padding: 16px; background: var(--sheet); color: var(--ink); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 12px 32px rgba(23, 32, 58, 0.22); }
+.popover h3 { margin: 0 0 4px; font-size: 16px; }
+.popover p { margin: 0; font-size: 14px; color: var(--ink-soft); }
+.popover-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.popover-actions .button { width: 100%; min-height: 42px; }
+.confirm-inline { display: grid; gap: 12px; padding: 12px; background: var(--paper); border-radius: 8px; }
+.confirm-inline p { margin: 0; }
+
+.filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.filter-bar .button.is-on { background: var(--action-tint); border-color: var(--action); color: var(--action); }
+.filter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 4px 0 6px; }
+.filter-grid .field { min-width: 0; }
+.filter-grid select, .filter-grid input { width: 100%; min-width: 0; min-height: 40px; }
+.bulk-bar select { min-height: 40px; width: auto; max-width: 100%; }
+.bulk-bar .button { min-height: 40px; }
+.lead-list-head .tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; gap: 2px 18px; }
+.lead-list-head .tabs::-webkit-scrollbar { display: none; }
+.lead-list-head .tab { flex: none; white-space: nowrap; }
+
+.lesson-tools, .pay-toolbar { gap: 10px; }
+.lesson-tools select, .pay-toolbar select, .pay-toolbar input { min-height: 40px; width: auto; max-width: 100%; }
+.lesson-tools .button, .pay-toolbar .button { min-height: 40px; }
+
+.member-actions { display: inline-flex; align-items: center; gap: 14px; margin-left: auto; }
+.member-summary { font-size: 13px; }
+@media (max-width: 760px) { .filter-grid { grid-template-columns: minmax(0, 1fr); } .member-actions { margin-left: 0; } }

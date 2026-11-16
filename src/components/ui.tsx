@@ -4,13 +4,18 @@ import { BRAND_ICONS } from "../lib/brandIcons";
 import { PLATFORMS } from "../lib/platforms";
 import type { Platform } from "../lib/types";
 
+const BADGE_BACKGROUND: Partial<Record<Platform, string>> = {
+  instagram: "linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)",
+};
+
+/** Одинаковый значок для всех соцсетей: цветная плитка с белым логотипом. */
 export function ChannelTag({ platform }: { platform: Platform }) {
   const info = PLATFORMS[platform];
   const icon = BRAND_ICONS[platform];
   return (
-    <span className="tag tag-icon" title={info.label}>
-      <svg width="20" height="20" viewBox="0 0 24 24" role="img" aria-label={info.label}>
-        <path d={icon.path} fill={icon.color} />
+    <span className="channel-badge" title={info.label} style={{ background: BADGE_BACKGROUND[platform] ?? icon.color }}>
+      <svg viewBox="0 0 24 24" role="img" aria-label={info.label}>
+        <path d={icon.path} fill="#fff" />
       </svg>
     </span>
   );

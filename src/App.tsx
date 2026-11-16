@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type Compo
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { BookOpen, Building2, Inbox, KeyRound, LifeBuoy, ListChecks, LogOut, Menu, Plug, ShieldCheck, UserRound, Users, Wallet } from "lucide-react";
-import { AccountDialog, SignOutButton, SignOutDialog } from "./components/Account";
+import { AccountDialog, rectOf, SignOutButton, SignOutPopover, type AnchorRect } from "./components/Account";
 import { Logo, Modal } from "./components/ui";
 import { type ChannelProblem, useChannelProblems } from "./lib/alerts";
 import { daysLeft, longDate } from "./lib/format";
@@ -85,7 +85,7 @@ function RailLink({ item, secondary, onNavigate }: { item: NavItem; secondary?: 
 function Rail({ items, platform, note }: { items: NavItem[]; platform?: boolean; note?: string }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
-  const [signOutOpen, setSignOutOpen] = useState(false);
+  const [signOutRect, setSignOutRect] = useState<AnchorRect | null>(null);
   // «Аккаунт» и «Выйти» тоже считаются: всего в нижнем меню помещается пять пунктов.
   const useMore = items.length + 2 > 5;
   const primary = useMore ? items.filter((i) => i.primary) : items;
@@ -113,7 +113,7 @@ function Rail({ items, platform, note }: { items: NavItem[]; platform?: boolean;
         <span className="rail-icon"><UserRound size={22} aria-hidden /></span>
         Аккаунт
       </button>
-      <button type="button" className={`rail-link rail-signout ${useMore ? "is-secondary" : ""}`} onClick={() => setSignOutOpen(true)}>
+      <button type="button" className={`rail-link rail-signout ${useMore ? "is-secondary" : ""}`} data-signout-trigger onClick={(e) => setSignOutRect((r) => (r ? null : rectOf(e.currentTarget)))}>
         <span className="rail-icon"><LogOut size={22} aria-hidden /></span>
         Выйти
       </button>
@@ -128,7 +128,16 @@ function Rail({ items, platform, note }: { items: NavItem[]; platform?: boolean;
               <span className="rail-icon"><UserRound size={22} aria-hidden /></span>
               Аккаунт
             </button>
-            <button type="button" className="rail-link" onClick={() => { setMoreOpen(false); setSignOutOpen(true); }}>
+            <button
+              type="button"
+              className="rail-link"
+              onClick={() => {
+                // Окно «Ещё» закрываем, а вопрос показываем у кнопки «Ещё» в нижнем меню.
+                const anchor = document.querySelector(".rail-more");
+                setMoreOpen(false);
+                if (anchor) setSignOutRect(rectOf(anchor));
+              }}
+            >
               <span className="rail-icon"><LogOut size={22} aria-hidden /></span>
               Выйти
             </button>
@@ -136,7 +145,7 @@ function Rail({ items, platform, note }: { items: NavItem[]; platform?: boolean;
         </Modal>
       )}
       {accountOpen && <AccountDialog onClose={() => setAccountOpen(false)} />}
-      {signOutOpen && <SignOutDialog onClose={() => setSignOutOpen(false)} />}
+      {signOutRect && <SignOutPopover rect={signOutRect} onClose={() => setSignOutRect(null)} />}
     </nav>
   );
 }

@@ -15,6 +15,7 @@ export function TeamPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [removing, setRemoving] = useState<Member | null>(null);
+  const [editing, setEditing] = useState<Member | null>(null);
 
   const load = useCallback(async () => {
     const { data, error: e } = await supabase.from("workspace_members").select("user_id, email, role, created_at, can_view_payments, can_edit_survey").eq("workspace_id", workspace.id).order("created_at");
@@ -104,21 +105,17 @@ export function TeamPage() {
               {member.user_id === userId && <span className="muted"> (вы)</span>}
             </span>
             <span className="muted">{member.role === "owner" ? "Владелец" : "Администратор"}</span>
-            {isOwner && member.role !== "owner" && (
-              <button type="button" className="link-button link-danger" onClick={() => setRemoving(member)}>
-                Удалить
-              </button>
+            {member.role !== "owner" && (
+              <span className="muted member-summary">{[member.can_view_payments && "Оплаты", member.can_edit_survey && "Анкета"].filter(Boolean).join(", ") || "Без особых прав"}</span>
             )}
             {isOwner && member.role !== "owner" && (
-              <span className="member-perms">
-                <label className="check">
-                  <input type="checkbox" checked={member.can_view_payments} onChange={(e) => setPermissions(member, { can_view_payments: e.target.checked })} />
-                  Видит оплаты
-                </label>
-                <label className="check">
-                  <input type="checkbox" checked={member.can_edit_survey} onChange={(e) => setPermissions(member, { can_edit_survey: e.target.checked })} />
-                  Правит анкету
-                </label>
+              <span className="member-actions">
+                <button type="button" className="button" onClick={() => setEditing(member)}>
+                  Изменить права
+                </button>
+                <button type="button" className="link-button link-danger" onClick={() => setRemoving(member)}>
+                  Удалить
+                </button>
               </span>
             )}
           </li>
@@ -155,6 +152,17 @@ export function TeamPage() {
         </>
       )}
 
+      {editing && (
+        <PermissionsDialog
+          member={editing}
+          onClose={() => setEditing(null)}
+          onSave={async (patch) => {
+            await setPermissions(editing, patch);
+            setEditing(null);
+          }}
+        />
+      )}
+
       {removing && (
         <Modal title="Удалить администратора?" onClose={() => setRemoving(null)}>
           <div className="stack">
@@ -171,5 +179,59 @@ export function TeamPage() {
         </Modal>
       )}
     </main>
+  );
+}
+
+/** Окно «Изменить права сотрудника»: отмечаете, что разрешено, и сохраняете одной кнопкой. */
+function PermissionsDialog({
+  member, onClose, onSave,
+}: {
+  member: Member;
+  onClose: () => void;
+  onSave: (patch: Pick<Member, "can_view_payments" | "can_edit_survey">) => Promise<void>;
+}) {
+  const [viewPayments, setViewPayments] = useState(member.can_view_payments);
+  const [editSurvey, setEditSurvey] = useState(member.can_edit_survey);
+  const [busy, setBusy] = useState(false);
+  const changed = viewPayments !== member.can_view_payments || editSurvey !== member.can_edit_survey;
+
+  return (
+    <Modal title="Права сотрудника" onClose={onClose}>
+      <div className="stack">
+        <p className="account-email">{member.email}</p>
+        <fieldset className="perm-list">
+          <legend>Что разрешено</legend>
+          <label className="check perm">
+            <input type="checkbox" checked={viewPayments} onChange={(e) => setViewPayments(e.target.checked)} />
+            <span>
+              <strong>Видит оплаты</strong>
+              <span className="muted"> — раздел «Оплаты», цены и суммы в уроках</span>
+            </span>
+          </label>
+          <label className="check perm">
+            <input type="checkbox" checked={editSurvey} onChange={(e) => setEditSurvey(e.target.checked)} />
+            <span>
+              <strong>Правит анкету</strong>
+              <span className="muted"> — раздел «Вопросы»: вопросы бота, языки, рабочее время</span>
+            </span>
+          </label>
+        </fieldset>
+        <div className="popover-actions">
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={busy || !changed}
+            onClick={async () => {
+              setBusy(true);
+              await onSave({ can_view_payments: viewPayments, can_edit_survey: editSurvey });
+              setBusy(false);
+            }}
+          >
+            {busy ? "Сохраняем…" : "Сохранить"}
+          </button>
+          <button type="button" className="button" onClick={onClose}>Отмена</button>
+        </div>
+      </div>
+    </Modal>
   );
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, BarChart3, Bell, BellOff, CheckSquare, Download, Search, Send, X } from "lucide-react";
+import { ArrowLeft, BarChart3, Bell, BellOff, CheckSquare, Download, Search, Send, SlidersHorizontal, X } from "lucide-react";
 import { useApp } from "../App";
 import { QuickReplies } from "../components/QuickReplies";
 import { Modal } from "../components/ui";
@@ -47,6 +47,7 @@ export function LeadsPage() {
   const [assignTo, setAssignTo] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
   const [showStats, setShowStats] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [sound, setSound] = useSoundSetting();
   const [notice, setNotice] = useState("");
 
@@ -150,6 +151,7 @@ export function LeadsPage() {
     return [...list].sort((a, b) => Number(isOverdue(b)) - Number(isOverdue(a)));
   }, [leads, tab, query, channelFilter, assigneeFilter, dateFrom, dateTo, onlyOverdue, userId]);
 
+  const activeFilters = [channelFilter !== "all", assigneeFilter !== "all", Boolean(dateFrom), Boolean(dateTo), onlyOverdue].filter(Boolean).length;
   const filtersOn = channelFilter !== "all" || assigneeFilter !== "all" || Boolean(dateFrom) || Boolean(dateTo) || onlyOverdue;
 
   function togglePick(id: string) {
@@ -238,23 +240,10 @@ export function LeadsPage() {
             <Search size={16} aria-hidden />
             <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Имя, телефон или текст" aria-label="Поиск по заявкам" />
           </label>
-          <div className="lead-filters">
-            <select value={channelFilter} onChange={(e) => setChannelFilter(e.target.value)} aria-label="Канал">
-              <option value="all">Все каналы</option>
-              {channelOptions.map(([id, name]) => (
-                <option key={id} value={id}>{name}</option>
-              ))}
-            </select>
-            <select value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)} aria-label="Ответственный">
-              <option value="all">Все ответственные</option>
-              <option value="me">Я</option>
-              <option value="none">Не назначены</option>
-              {members.filter((m) => m.user_id !== userId).map((m) => (
-                <option key={m.user_id} value={m.user_id}>{m.email}</option>
-              ))}
-            </select>
-            <label className="lead-date">С <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} /></label>
-            <label className="lead-date">По <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} /></label>
+          <div className="filter-bar">
+            <button type="button" className={`button ${filtersOpen ? "is-on" : ""}`} onClick={() => setFiltersOpen(!filtersOpen)} aria-expanded={filtersOpen}>
+              <SlidersHorizontal size={16} aria-hidden /> Фильтры{activeFilters > 0 ? ` · ${activeFilters}` : ""}
+            </button>
             {overdueCount > 0 && (
               <button type="button" className={`chip chip-bad ${onlyOverdue ? "is-on" : ""}`} onClick={() => setOnlyOverdue(!onlyOverdue)} aria-pressed={onlyOverdue}>
                 Просрочено: {overdueCount}
@@ -266,6 +255,38 @@ export function LeadsPage() {
               </button>
             )}
           </div>
+          {filtersOpen && (
+            <div className="filter-grid">
+              <label className="field">
+                Канал
+                <select value={channelFilter} onChange={(e) => setChannelFilter(e.target.value)}>
+                  <option value="all">Все каналы</option>
+                  {channelOptions.map(([id, name]) => (
+                    <option key={id} value={id}>{name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                Ответственный
+                <select value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}>
+                  <option value="all">Все</option>
+                  <option value="me">Я</option>
+                  <option value="none">Не назначены</option>
+                  {members.filter((m) => m.user_id !== userId).map((m) => (
+                    <option key={m.user_id} value={m.user_id}>{m.email}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                С даты
+                <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} />
+              </label>
+              <label className="field">
+                По дату
+                <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} />
+              </label>
+            </div>
+          )}
           {selecting && (
             <div className="bulk-bar" role="group" aria-label="Действия с выбранными заявками">
               <span>Выбрано: {picked.size}</span>
