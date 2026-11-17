@@ -113,7 +113,11 @@ function Rail({ items, platform, note }: { items: NavItem[]; platform?: boolean;
         <span className="rail-icon"><UserRound size={22} aria-hidden /></span>
         Аккаунт
       </button>
-      <button type="button" className={`rail-link rail-signout ${useMore ? "is-secondary" : ""}`} data-signout-trigger onClick={(e) => setSignOutRect((r) => (r ? null : rectOf(e.currentTarget)))}>
+      <button type="button" className={`rail-link rail-signout ${useMore ? "is-secondary" : ""}`} data-signout-trigger onClick={(e) => {
+          // Положение кнопки считаем сразу: внутри функции обновления event.currentTarget уже пустой.
+          const rect = rectOf(e.currentTarget);
+          setSignOutRect((current) => (current ? null : rect));
+        }}>
         <span className="rail-icon"><LogOut size={22} aria-hidden /></span>
         Выйти
       </button>

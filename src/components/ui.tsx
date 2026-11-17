@@ -1,22 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Check, Copy, X } from "lucide-react";
-import { BRAND_ICONS } from "../lib/brandIcons";
 import { PLATFORMS } from "../lib/platforms";
 import type { Platform } from "../lib/types";
 
-const BADGE_BACKGROUND: Partial<Record<Platform, string>> = {
-  instagram: "linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)",
-};
-
-/** Одинаковый значок для всех соцсетей: цветная плитка с белым логотипом. */
 export function ChannelTag({ platform }: { platform: Platform }) {
   const info = PLATFORMS[platform];
-  const icon = BRAND_ICONS[platform];
   return (
-    <span className="channel-badge" title={info.label} style={{ background: BADGE_BACKGROUND[platform] ?? icon.color }}>
-      <svg viewBox="0 0 24 24" role="img" aria-label={info.label}>
-        <path d={icon.path} fill="#fff" />
-      </svg>
+    <span className="tag" style={{ color: info.color, borderColor: info.color }} title={info.label} aria-label={info.label}>
+      {info.code}
     </span>
   );
 }

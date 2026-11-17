@@ -231,7 +231,7 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 .empty { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 20px; background: var(--sheet); border: 1px dashed var(--rule); border-radius: 6px; }
 
 /* Обычные страницы */
-.page { padding: 24px clamp(16px, 3vw, 36px) 48px; max-width: 1180px; }
+.page { padding: 24px clamp(16px, 3vw, 36px) 48px; max-width: none; width: 100%; box-sizing: border-box; }
 .page-narrow { max-width: 680px; }
 .page-head { margin-bottom: 18px; }
 .page-head p { margin-top: 4px; max-width: 60em; }
@@ -377,9 +377,9 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 .password-row input { flex: 1; min-width: 0; }
 
 /* Поддержка */
-.support-page { height: 100%; display: flex; flex-direction: column; gap: 10px; padding: 20px 24px 16px; max-width: 860px; min-height: 0; }
+.support-page { height: 100%; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; padding: 20px clamp(16px, 3vw, 36px) 16px; max-width: none; min-height: 0; overflow: hidden; }
 .support-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
-.support-list { flex: 1; min-height: 120px; overflow-y: auto; padding: 4px 2px; }
+.support-list { flex: 1 1 0; min-height: 80px; overflow-y: auto; padding: 4px 2px; }
 .support-empty { align-self: center; text-align: center; padding: 28px 12px; max-width: 34em; }
 .support-status { font-weight: 600; font-size: 14px; }
 .quick-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -733,3 +733,10 @@ button.chip.is-on { outline: 2px solid var(--danger); }
 .member-actions { display: inline-flex; align-items: center; gap: 14px; margin-left: auto; }
 .member-summary { font-size: 13px; }
 @media (max-width: 760px) { .filter-grid { grid-template-columns: minmax(0, 1fr); } .member-actions { margin-left: 0; } }
+
+/* Поддержка и опрос на весь экран */
+.support-chat { width: 100%; min-width: 0; }
+.composer { flex: none; }
+.editor { grid-template-columns: minmax(0, 1fr) minmax(300px, 400px); }
+.crash { min-height: 100dvh; display: flex; flex-direction: column; justify-content: center; gap: 12px; max-width: 520px; margin: 0 auto; padding: 24px; }
+.support-list .bubble { max-width: min(720px, 88%); }

@@ -32,14 +32,17 @@ export function rectOf(element: Element): AnchorRect {
 export function SignOutPopover({ rect, onClose }: { rect: AnchorRect; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const stayRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   useEffect(() => {
     stayRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeRef.current();
     const onDown = (e: Event) => {
-      const target = e.target as Element;
-      if (ref.current?.contains(target) || target.closest?.("[data-signout-trigger]")) return;
-      onClose();
+      const target = e.target;
+      if (!(target instanceof Element)) return closeRef.current();
+      if (ref.current?.contains(target) || target.closest("[data-signout-trigger]")) return;
+      closeRef.current();
     };
     document.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onDown);
@@ -49,7 +52,7 @@ export function SignOutPopover({ rect, onClose }: { rect: AnchorRect; onClose: (
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("touchstart", onDown);
     };
-  }, [onClose]);
+  }, []);
 
   const width = Math.min(290, window.innerWidth - 16);
   const phone = window.matchMedia("(max-width: 760px)").matches;
@@ -84,7 +87,11 @@ export function SignOutButton({ className = "button", children = "Выйти" }:
   const [rect, setRect] = useState<AnchorRect | null>(null);
   return (
     <>
-      <button type="button" className={className} data-signout-trigger onClick={(e: MouseEvent<HTMLButtonElement>) => setRect((r) => (r ? null : rectOf(e.currentTarget)))}>
+      <button type="button" className={className} data-signout-trigger onClick={(e: MouseEvent<HTMLButtonElement>) => {
+          // Положение кнопки считаем сразу: внутри функции обновления event.currentTarget уже пустой.
+          const next = rectOf(e.currentTarget);
+          setRect((current) => (current ? null : next));
+        }}>
         {children}
       </button>
       {rect && <SignOutPopover rect={rect} onClose={() => setRect(null)} />}

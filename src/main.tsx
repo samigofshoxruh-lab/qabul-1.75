@@ -7,11 +7,14 @@ import "@fontsource/golos-text/600.css";
 import "@fontsource-variable/geologica";
 import "./styles.css";
 import { App } from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <HashRouter>
-      <App />
-    </HashRouter>
+    <ErrorBoundary>
+      <HashRouter>
+        <App />
+      </HashRouter>
+    </ErrorBoundary>
   </StrictMode>,
 );
