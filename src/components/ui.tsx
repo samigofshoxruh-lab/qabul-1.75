@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Check, Copy, X } from "lucide-react";
+import { BRAND_ICONS } from "../lib/brandIcons";
 import { PLATFORMS } from "../lib/platforms";
 import type { Platform } from "../lib/types";
 
 export function ChannelTag({ platform }: { platform: Platform }) {
   const info = PLATFORMS[platform];
+  const icon = BRAND_ICONS[platform];
   return (
-    <span className="tag" style={{ color: info.color, borderColor: info.color }} title={info.label} aria-label={info.label}>
-      {info.code}
+    <span className="tag tag-icon" title={info.label}>
+      <svg width="20" height="20" viewBox="0 0 24 24" role="img" aria-label={info.label}>
+        <path d={icon.path} fill={icon.color} />
+      </svg>
     </span>
   );
 }
