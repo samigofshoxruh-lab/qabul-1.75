@@ -168,8 +168,8 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 
 /* Заявки */
 .leads { height: 100%; display: flex; }
-.lead-list { width: 396px; flex: none; height: 100%; display: flex; flex-direction: column; background: var(--sheet); border-right: 1px solid var(--rule); min-height: 0; }
-.lead-list-head { padding: 16px 20px 0; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--rule); }
+.lead-list { width: 540px; flex: none; height: 100%; display: flex; flex-direction: column; background: var(--sheet); border-right: 1px solid var(--rule); min-height: 0; }
+.lead-list-head { padding: 16px 16px 0; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--rule); }
 .lead-list-title { display: flex; align-items: center; justify-content: space-between; }
 .search { position: relative; display: block; }
 .search svg { position: absolute; left: 10px; top: 11px; color: var(--ink-soft); pointer-events: none; }
@@ -746,3 +746,11 @@ button.chip.is-on { outline: 2px solid var(--danger); }
 .stage, .stage-body { position: relative; }
 .stage-body { overscroll-behavior: contain; }
 .tag-icon { border: 0; background: none; width: 28px; height: 28px; }
+
+/* Заявки: ответственный и вкладки, которые помещаются целиком */
+.lead-list-head .tabs { gap: 2px 11px; }
+.lead-list-head .tab { font-size: 13.5px; gap: 3px; }
+.lead-list-head .tab .count { font-size: 11px; padding: 0 6px; min-width: 18px; margin-left: 0; }
+@media (max-width: 1180px) { .lead-list { width: 480px; } .lead-list-head .tab:nth-child(n+4) .count { display: none; } }
+.assignee-line { margin: 0; padding: 8px 16px 0; font-size: 14px; }
+.chip-who { background: var(--action-tint); color: var(--action); }

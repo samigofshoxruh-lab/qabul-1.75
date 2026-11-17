@@ -196,6 +196,7 @@ export interface Lead {
   last_message_at: string;
   last_message_preview: string | null;
   created_at: string;
+  taken_at: string | null;
   follow_up_at: string | null;
   tags: string[];
   source: string | null;

@@ -1350,3 +1350,68 @@ test("посещаемость по датам и напоминания пер�
   await assert.rejects(as("authenticated", stranger.id, (run) => run("select lesson_set_attendance($1, current_date, true)", [student.id])), /не найден/);
   assert.equal((await as("authenticated", stranger.id, (run) => run("select 1 from lesson_attendance"))).length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Чья заявка: владелец может всё, сотрудник не трогает чужие
+// ---------------------------------------------------------------------------
+
+test("сотрудник не берёт и не закрывает заявку коллеги, владелец берёт и передаёт любую", async () => {
+  const { owner, ch } = await bare();
+  const anna = await staff(owner.workspace);
+  const boris = await staff(owner.workspace);
+  const lead = (await inbound(ch.id, uid("tg"), { text: "Привет" })).lead_id;
+  const holder = async () => one("select assigned_to, status from leads where id = $1", [lead]);
+
+  await as("authenticated", anna.id, (run) => run("select take_lead($1)", [lead]));
+  assert.deepEqual([(await holder()).assigned_to, (await holder()).status], [anna.id, "in_work"]);
+
+  // Борис не может ни взять, ни закрыть, ни переназначить.
+  await assert.rejects(as("authenticated", boris.id, (run) => run("select take_lead($1)", [lead])), /уже взял в работу/);
+  await assert.rejects(as("authenticated", boris.id, (run) => run("select set_lead_status($1, 'done')", [lead])), /Заявка у сотрудника/);
+  await assert.rejects(as("authenticated", boris.id, (run) => run("select assign_lead($1, $2)", [lead, boris.id])), /Передать заявку может/);
+  await assert.rejects(as("authenticated", boris.id, (run) => run("select bulk_assign($1, $2)", [[lead], anna.id])), /только владелец/);
+  const skipped = await as("authenticated", boris.id, (run) => run("select bulk_assign($1, $2) as n", [[lead], boris.id]));
+  assert.equal(Number(skipped[0].n), 0);
+  assert.equal((await holder()).assigned_to, anna.id);
+
+  // Владелец забирает чужую заявку без ошибок и передаёт любому сотруднику.
+  await as("authenticated", owner.id, (run) => run("select take_lead($1)", [lead]));
+  assert.equal((await holder()).assigned_to, owner.id);
+  await as("authenticated", owner.id, (run) => run("select assign_lead($1, $2)", [lead, boris.id]));
+  assert.equal((await holder()).assigned_to, boris.id);
+
+  // Передать дальше может тот, у кого заявка.
+  await as("authenticated", boris.id, (run) => run("select assign_lead($1, $2)", [lead, anna.id]));
+  assert.equal((await holder()).assigned_to, anna.id);
+
+  // Хозяин спокойно закрывает свою заявку.
+  await as("authenticated", anna.id, (run) => run("select set_lead_status($1, 'done')", [lead]));
+  assert.equal((await holder()).status, "done");
+  await assert.rejects(as("authenticated", owner.id, (run) => run("select assign_lead($1, $2)", [lead, anna.id])), /сначала верните в работу/);
+});
+
+test("заявки сотрудника, которого убрали из команды, возвращаются в «Новые» и их может взять любой", async () => {
+  const { owner, ch } = await bare();
+  const anna = await staff(owner.workspace);
+  const boris = await staff(owner.workspace);
+  const lead = (await inbound(ch.id, uid("tg"), { text: "Привет" })).lead_id;
+  await as("authenticated", anna.id, (run) => run("select take_lead($1)", [lead]));
+
+  await q("delete from workspace_members where workspace_id = $1 and user_id = $2", [owner.workspace, anna.id]);
+  const freed = await one("select assigned_to, status, taken_at from leads where id = $1", [lead]);
+  assert.deepEqual([freed.assigned_to, freed.status, freed.taken_at], [null, "new", null]);
+
+  await as("authenticated", boris.id, (run) => run("select take_lead($1)", [lead]));
+  assert.equal((await one("select assigned_to from leads where id = $1", [lead])).assigned_to, boris.id);
+});
+
+test("заявка, у которой хозяина уже нет в команде, не блокирует сотрудника", async () => {
+  const { owner, ch } = await bare();
+  const boris = await staff(owner.workspace);
+  const ghost = await signup();
+  const lead = (await inbound(ch.id, uid("tg"), { text: "Привет" })).lead_id;
+  // Хозяин числится, но в команде его нет (старые данные).
+  await q("update leads set assigned_to = $2, status = 'in_work' where id = $1", [lead, ghost.id]);
+  await as("authenticated", boris.id, (run) => run("select take_lead($1)", [lead]));
+  assert.equal((await one("select assigned_to from leads where id = $1", [lead])).assigned_to, boris.id);
+});

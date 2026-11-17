@@ -101,6 +101,14 @@ export function LeadsPage() {
     return result;
   }, [leads, userId]);
 
+  // У кого заявка: имя до «@», «вы» для себя, «удалён» если сотрудника уже нет в команде.
+  const holderLabel = (lead: Lead): string | null => {
+    if (lead.status !== "in_work" || !lead.assigned_to) return null;
+    if (lead.assigned_to === userId) return "у вас";
+    const m = members.find((x) => x.user_id === lead.assigned_to);
+    return m ? `у ${(m.email ?? "сотрудника").split("@")[0]}` : "сотрудник удалён";
+  };
+
   const overdueCount = useMemo(() => (leads ?? []).filter(isOverdue).length, [leads]);
   const channelOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -307,7 +315,7 @@ export function LeadsPage() {
               {TABS.map((t) => (
                 <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className="tab" onClick={() => setTab(t.id)}>
                   {t.label}
-                  {counts[t.id] > 0 && <span className="count">{counts[t.id]}</span>}
+                  {counts[t.id] > 0 && <span className="count" aria-label={`Заявок: ${counts[t.id]}`}>{counts[t.id] > 99 ? "99+" : counts[t.id]}</span>}
                 </button>
               ))}
             </div>
@@ -349,8 +357,9 @@ export function LeadsPage() {
                 <span className="row-main">
                   <span className="row-name">{contactName(lead)}</span>
                   <span className="row-preview">{lead.last_message_preview || "Нет сообщений"}</span>
-                  {(isOverdue(lead) || lead.tags?.length > 0 || (lead.follow_up_at && lead.status !== "done")) && (
+                  {(isOverdue(lead) || lead.tags?.length > 0 || (lead.follow_up_at && lead.status !== "done") || holderLabel(lead)) && (
                     <span className="row-meta">
+                      {holderLabel(lead) && <span className="chip chip-who">{holderLabel(lead)}</span>}
                       {isOverdue(lead) ? (
                         <span className="chip chip-bad">Просрочено: вернуться {shortTime(lead.follow_up_at!)}</span>
                       ) : lead.follow_up_at && (lead.status === "new" || lead.status === "in_work") ? (
@@ -485,6 +494,7 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
   const composer = useRef<HTMLFormElement>(null);
   const draftInput = useRef<HTMLTextAreaElement>(null);
   const [panel, setPanel] = useState<"sheet" | "chat">("sheet");
+  const [transferOpen, setTransferOpen] = useState(false);
 
   const loadDetail = useCallback(async () => {
     const [a, m] = await Promise.all([
@@ -592,6 +602,13 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
   }
 
   const assignee = members.find((m) => m.user_id === lead.assigned_to);
+  const isOwner = workspace.role === "owner";
+  const holderInTeam = Boolean(assignee);
+  // Чужую заявку сотруднику трогать нельзя. Владелец может всё. Если хозяина уже нет в команде, заявка свободна.
+  const heldByOther = !isOwner && lead.status === "in_work" && Boolean(lead.assigned_to) && lead.assigned_to !== userId && holderInTeam;
+  const isOpen = lead.status === "collecting" || lead.status === "new" || lead.status === "in_work";
+  const canTransfer = isOpen && (isOwner || lead.assigned_to === userId);
+  const holderName = assignee ? (assignee.user_id === userId ? "вы" : assignee.email ?? "сотрудник") : null;
   const platform = lead.channels?.platform;
   const profile = lead.contacts?.username ? `@${lead.contacts.username}` : null;
 
@@ -611,16 +628,13 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
           </p>
         </div>
         <div className="detail-actions">
-          <span className={`status status-${lead.status}`}>
-            {STATUS_LABEL[lead.status]}
-            {lead.status === "in_work" && assignee?.email ? `: ${assignee.user_id === userId ? "вы" : assignee.email}` : ""}
-          </span>
-          {(lead.status === "new" || lead.status === "collecting") && (
+          <span className={`status status-${lead.status}`}>{STATUS_LABEL[lead.status]}</span>
+          {!heldByOther && (lead.status === "new" || lead.status === "collecting") && (
             <button type="button" className="button button-primary" onClick={take} disabled={busy}>
               Взять в работу
             </button>
           )}
-          {lead.status === "in_work" && (
+          {!heldByOther && lead.status === "in_work" && (
             <>
               {lead.assigned_to !== userId && (
                 <button type="button" className="button" onClick={take} disabled={busy}>
@@ -638,6 +652,11 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
               </button>
             </>
           )}
+          {canTransfer && (
+            <button type="button" className="button" onClick={() => setTransferOpen(true)} disabled={busy}>
+              Передать
+            </button>
+          )}
           {(lead.status === "done" || lead.status === "rejected") && (
             <button type="button" className="button" onClick={() => setStatus("in_work")} disabled={busy}>
               Вернуть в работу
@@ -646,6 +665,24 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
         </div>
       </header>
 
+      <p className="assignee-line">
+        <span className="muted">Ответственный:</span>{" "}
+        {lead.assigned_to ? (
+          holderInTeam ? (
+            <strong>{holderName}</strong>
+          ) : (
+            <span>сотрудник удалён из команды, заявку может взять любой</span>
+          )
+        ) : (
+          <strong>не назначен</strong>
+        )}
+        {lead.assigned_to && lead.taken_at && <span className="muted"> · с {shortTime(lead.taken_at)}</span>}
+      </p>
+      {heldByOther && (
+        <p className="note">
+          Эту заявку ведёт {holderName}. Взять её себе нельзя: передать её вам может владелец или сам {holderName}.
+        </p>
+      )}
       <ErrorNote>{error}</ErrorNote>
       <LeadMeta lead={lead} onChanged={onChanged} setError={setError} />
       {lead.handoff && lead.status === "new" && <p className="note note-attention">Клиент не смог пройти опрос или попросил живого человека. Ответьте ему лично.</p>}
@@ -734,7 +771,72 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
           </form>
         </div>
       </div>
+      {transferOpen && (
+        <TransferDialog
+          lead={lead}
+          members={members}
+          userId={userId}
+          onClose={() => setTransferOpen(false)}
+          onDone={async () => {
+            setTransferOpen(false);
+            await onChanged();
+          }}
+        />
+      )}
     </article>
+  );
+}
+
+/** «Передать»: выбрать сотрудника, которому уйдёт заявка. Её может передать владелец или тот, у кого она сейчас. */
+function TransferDialog({
+  lead, members, userId, onClose, onDone,
+}: {
+  lead: Lead;
+  members: Member[];
+  userId: string;
+  onClose: () => void;
+  onDone: () => Promise<void>;
+}) {
+  const options = members.filter((m) => m.user_id !== lead.assigned_to);
+  const [target, setTarget] = useState(options[0]?.user_id ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setBusy(true);
+    setError("");
+    const { error: e } = await supabase.rpc("assign_lead", { p_lead_id: lead.id, p_user: target });
+    setBusy(false);
+    if (e) return setError(e.message);
+    await onDone();
+  }
+
+  return (
+    <Modal title="Передать заявку" onClose={onClose}>
+      <div className="stack">
+        {options.length === 0 ? (
+          <p className="muted">В команде больше нет сотрудников, которым можно передать заявку.</p>
+        ) : (
+          <label className="field">
+            Кому передать
+            <select value={target} onChange={(e) => setTarget(e.target.value)}>
+              {options.map((m) => (
+                <option key={m.user_id} value={m.user_id}>
+                  {m.email ?? "Сотрудник"}{m.user_id === userId ? " (вы)" : ""}{m.role === "owner" ? ", владелец" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <ErrorNote>{error}</ErrorNote>
+        <div className="popover-actions">
+          <button type="button" className="button button-primary" disabled={busy || !target} onClick={submit}>
+            {busy ? "Передаём…" : "Передать"}
+          </button>
+          <button type="button" className="button" onClick={onClose}>Отмена</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
